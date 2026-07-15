@@ -98,6 +98,11 @@ export class PreviewServer {
     return this.port;
   }
 
+  get listeningAddress(): string | null {
+    const address = this.server?.address();
+    return typeof address === "object" && address !== null ? address.address : null;
+  }
+
   async createSession(options: CreatePreviewSessionOptions): Promise<PreviewSession> {
     if (this.disposed) throw new Error("预览服务已经永久停止，不能再创建会话");
     const generation = this.lifecycleGeneration;

@@ -1,7 +1,6 @@
 import { request } from "node:http";
 import { once } from "node:events";
 import { createConnection } from "node:net";
-import { lookup } from "node:dns/promises";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import os from "node:os";
@@ -76,12 +75,11 @@ describe("PreviewServer", () => {
     expect(server.activeSessionCount).toBe(1);
   });
 
-  it("resolves the random per-session localhost host only to loopback addresses", async () => {
+  it("uses a random localhost origin while listening only on IPv4 loopback", () => {
     const hostname = new URL(session.origin).hostname;
-    const addresses = await lookup(hostname, { all: true });
 
-    expect(addresses.length).toBeGreaterThan(0);
-    expect(addresses.every(address => address.address === "127.0.0.1" || address.address === "::1")).toBe(true);
+    expect(hostname).toMatch(/^[a-f0-9]{32}\.localhost$/);
+    expect(server.listeningAddress).toBe("127.0.0.1");
   });
 
   it("blocks encoded traversal and records a useful diagnostic", async () => {
