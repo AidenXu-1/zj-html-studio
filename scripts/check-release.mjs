@@ -1,4 +1,4 @@
-import { access, readFile, stat } from "node:fs/promises";
+import { access, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -20,6 +20,27 @@ async function fileExists(relativePath) {
   } catch {
     return false;
   }
+}
+
+async function collectPrivacyScanFiles(relativeDirectory = ".") {
+  const entries = await readdir(path.join(ROOT, relativeDirectory), { withFileTypes: true });
+  const files = [];
+
+  for (const entry of entries) {
+    const relativePath = path.join(relativeDirectory, entry.name);
+    if (entry.isDirectory()) {
+      if ([".git", "node_modules"].includes(entry.name)) continue;
+      files.push(...await collectPrivacyScanFiles(relativePath));
+      continue;
+    }
+
+    if (entry.name === "package-lock.json" || relativePath === path.join("scripts", "check-release.mjs")) continue;
+    if (["LICENSE", ".gitignore"].includes(entry.name) || [".css", ".js", ".json", ".md", ".mjs", ".mts", ".ts", ".yml", ".yaml"].includes(path.extname(entry.name))) {
+      files.push(relativePath);
+    }
+  }
+
+  return files;
 }
 
 for (const requiredFile of [
@@ -58,6 +79,25 @@ check(packageJson.license && packageJson.license !== "UNLICENSED", "package.json
 check(versions[manifest.version] === manifest.minAppVersion, "versions.json must map the current plugin version to minAppVersion.");
 check(!packageJson.dependencies || Object.keys(packageJson.dependencies).length === 0, "Runtime dependencies require an explicit release review.");
 
+for (const forbiddenPath of ["AGENTS.md", "CLAUDE.md", "docs", "design", "scratch"]) {
+  check(!await fileExists(forbiddenPath), `Internal-only path must not enter the public repository: ${forbiddenPath}`);
+}
+
+const privacyPatterns = [
+  { label: "a local user directory", pattern: /(?:\/Users\/|[A-Za-z]:\\Users\\|\/home\/[A-Za-z0-9._-]+\/)/ },
+  { label: "an email address", pattern: /\b[A-Z0-9._%+-]+@(?!\d+x\.)[A-Z0-9.-]+\.[A-Z]{2,}\b/i },
+  { label: "a private key", pattern: /-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----/ },
+  { label: "a GitHub access token", pattern: /\b(?:gh[opsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/ },
+  { label: "a common API credential", pattern: /\b(?:sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b/ }
+];
+
+for (const relativePath of await collectPrivacyScanFiles()) {
+  const content = await readFile(path.join(ROOT, relativePath), "utf8");
+  for (const privacyPattern of privacyPatterns) {
+    check(!privacyPattern.pattern.test(content), `Potential privacy leak in ${relativePath}: ${privacyPattern.label}`);
+  }
+}
+
 if (await fileExists("dist/manifest.json")) {
   const distManifest = await readJson("dist/manifest.json");
   check(JSON.stringify(distManifest) === JSON.stringify(manifest), "dist/manifest.json must exactly match manifest.json.");
@@ -76,8 +116,15 @@ if (await fileExists("dist/styles.css")) {
 }
 
 const readme = await readFile(path.join(ROOT, "README.md"), "utf8");
-for (const disclosure of ["Plugin network use", "File access", "Telemetry, ads, and updates"]) {
-  check(readme.includes(disclosure), `README is missing required disclosure: ${disclosure}`);
+for (const disclosure of [
+  { label: "plugin network use / 插件自身联网", markers: ["Plugin network use", "插件自身联网"] },
+  { label: "file access / 文件读取", markers: ["File access", "文件读取"] },
+  { label: "telemetry and analytics / 数据收集", markers: ["Telemetry, ads, and updates", "数据收集"] }
+]) {
+  check(
+    disclosure.markers.some(marker => readme.includes(marker)),
+    `README is missing required disclosure: ${disclosure.label}`
+  );
 }
 
 const releaseTag = process.env.RELEASE_TAG ?? (process.env.GITHUB_REF_TYPE === "tag" ? process.env.GITHUB_REF_NAME : undefined);

@@ -1,19 +1,27 @@
-# Contributing
+# 参与贡献
 
-Thanks for helping improve ZJ HTML Studio.
+感谢你愿意帮助改进 ZJ HTML Studio。
 
-## Before opening a pull request
+## 提交前
 
-1. Open an issue for behavior changes or large refactors.
-2. Keep changes focused and preserve the default Safe read-only boundary.
-3. Add or update tests for changed behavior.
-4. Run the full check locally.
+1. 行为变化或较大重构，请先创建 Issue 说明问题和预期结果。
+2. 保持改动聚焦，不削弱默认“安全只读”边界。
+3. 行为发生变化时，补充或更新对应测试。
+4. 在本地运行完整检查：
 
 ```bash
 npm ci
 npm run check
 ```
 
-## Pull requests
+## Pull Request 说明
 
-Describe the user problem, the chosen approach, security or privacy impact, validation performed, and any platform that was not tested. Do not include real vault contents, credentials, private links, or personal data in fixtures or screenshots.
+请写清楚：
+
+- 要解决的用户问题
+- 采用的实现方式
+- 对安全与隐私的影响
+- 已执行的验证
+- 尚未覆盖的平台或场景
+
+测试夹具、截图和日志中不得包含真实知识库内容、账号凭据、私有链接、本机绝对路径或其他个人数据。

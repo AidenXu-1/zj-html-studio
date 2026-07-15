@@ -1,14 +1,14 @@
-# Changelog
+# 版本记录
 
-All notable changes to ZJ HTML Studio are documented here.
+ZJ HTML Studio 的重要变化记录在这里。
 
-## 0.1.3 - 2026-07-15
+## 0.1.3 · 2026-07-15
 
-First public release.
+第一个公开版本。
 
-- Preview local HTML and HTM files in native Obsidian tabs.
-- Support scoped local resources, parent paths, Chinese paths, query strings, modules, and media ranges.
-- Add Safe read-only and Trusted compatibility modes with explicit authorization.
-- Add dependency-aware live reload, diagnostics, browser sessions, source reveal, and full screen.
-- Isolate previews with random local host tokens and bounded per-session file scopes.
-- Add strict lifecycle, path, concurrency, and resource-budget protections.
+- 在 Obsidian 原生标签页预览本地 HTML 与 HTM 文件。
+- 支持限定范围的本地资源、父目录路径、中文路径、查询参数、模块和媒体分段请求。
+- 提供需要明确授权的“安全只读”与“可信兼容”模式。
+- 提供依赖感知自动刷新、诊断、浏览器会话、源文件定位和通用全屏。
+- 使用随机本地 Host 令牌和每会话资源范围隔离不同预览。
+- 加入严格的生命周期、路径、并发和资源预算保护。

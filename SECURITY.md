@@ -1,17 +1,23 @@
-# Security policy
+# 安全政策
 
-## Supported versions
+## 支持范围
 
-Security fixes are provided for the latest published release of ZJ HTML Studio.
+安全修复面向 ZJ HTML Studio 当前最新公开版本提供。
 
-## Reporting a vulnerability
+## 报告安全漏洞
 
-Please do not open a public issue for a suspected vulnerability.
-
-Use GitHub's **Report a vulnerability** form in the Security tab of the repository:
+疑似安全漏洞请不要提交公开 Issue。请使用仓库 Security 页面中的 **Report a vulnerability** 私密报告入口：
 
 <https://github.com/AidenXu-1/zj-html-studio/security/advisories/new>
 
-Include the affected version, operating system, Obsidian version, reproduction steps, expected impact, and any proof-of-concept files that are safe to share. Do not include private vault contents.
+报告时请尽量提供：
 
-You should receive an acknowledgement within seven days. A confirmed issue will be investigated, fixed, and disclosed in coordination with the reporter.
+- 受影响的插件版本
+- 操作系统与 Obsidian 版本
+- 可复现步骤
+- 可能造成的影响
+- 可以安全分享的最小复现文件
+
+请勿上传真实知识库内容、个人资料、访问令牌、私有链接或其他敏感信息。需要提供样例时，请先脱敏并缩减到最小范围。
+
+我们会尽量在七天内确认收到报告。确认问题后，将与报告者协作完成调查、修复和适当披露。
