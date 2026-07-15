@@ -7,7 +7,7 @@ import path from "node:path";
 import type { PreviewMode } from "../settings";
 import { getContentSecurityPolicy, getPermissionsPolicy } from "./security-policy";
 import { getMimeType } from "./mime-types";
-import { decodeRequestPath, encodeRelativeUrlPath, isPathInside, PathRequestError } from "./path-safety";
+import { decodeRequestPath, encodeRelativeUrlPath, isPathInside, PathRequestError, toVaultRelativePath } from "./path-safety";
 import { parseByteRange } from "./range";
 
 const HEADERS_TIMEOUT_MS = 10_000;
@@ -142,7 +142,7 @@ export class PreviewServer {
         mode: options.mode ?? "safe",
         origin,
         entryUrl: `${origin}/${encodeRelativeUrlPath(relativeEntry)}`,
-        scopeRelativePath: path.relative(vaultRoot, scopeAbsolutePath),
+        scopeRelativePath: toVaultRelativePath(vaultRoot, scopeAbsolutePath),
         scopeAbsolutePath,
         activeResponses: new Set(),
         activeStreams: new Set(),

@@ -1,6 +1,6 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { isPathInside } from "../server/path-safety";
+import { isPathInside, toVaultRelativePath } from "../server/path-safety";
 
 const TEXT_DEPENDENCY_EXTENSIONS = new Set([".css", ".htm", ".html", ".js", ".mjs"]);
 const DEFAULT_MAX_FILES = 200;
@@ -91,13 +91,13 @@ export async function analyzePreviewScope(
     try {
       fileStats = await stat(pending.absolutePath);
     } catch {
-      missingReferences.add(toVaultDisplayPath(vaultRootRealPath, pending.absolutePath));
+      missingReferences.add(toVaultRelativePath(vaultRootRealPath, pending.absolutePath));
       continue;
     }
     throwIfAborted(options.signal);
 
     if (fileStats.size > maxFileBytes) {
-      warnings.add(`跳过过大的文本依赖：${toVaultDisplayPath(vaultRootRealPath, pending.absolutePath)}`);
+      warnings.add(`跳过过大的文本依赖：${toVaultRelativePath(vaultRootRealPath, pending.absolutePath)}`);
       continue;
     }
 
@@ -192,7 +192,7 @@ export async function analyzePreviewScope(
       const dependencyPath = exists ? resolved : candidate;
       dependencyPaths.add(dependencyPath);
       scopeCandidates.add(dependencyPath);
-      const displayPath = toVaultDisplayPath(vaultRootRealPath, dependencyPath);
+      const displayPath = toVaultRelativePath(vaultRootRealPath, dependencyPath);
 
       if (!exists) {
         missingReferences.add(displayPath);
@@ -222,18 +222,18 @@ export async function analyzePreviewScope(
   const climbLevels = relativeFromScope === ""
     ? 0
     : relativeFromScope.split(path.sep).filter(Boolean).length;
-  const scopeRelativePath = path.relative(vaultRootRealPath, scopeAbsolutePath);
+  const scopeRelativePath = toVaultRelativePath(vaultRootRealPath, scopeAbsolutePath);
   const requiresConfirmation = scopeRelativePath === ""
     || climbLevels > 1
     || escapedReferences.size > 0
     || absoluteReferences.size > 0;
 
   return {
-    entryRelativePath: path.relative(vaultRootRealPath, entryAbsolutePath),
+    entryRelativePath: toVaultRelativePath(vaultRootRealPath, entryAbsolutePath),
     scopeRelativePath,
     climbLevels,
     requiresConfirmation,
-    dependencyRelativePaths: sortStrings([...dependencyPaths].map(dependency => toVaultDisplayPath(vaultRootRealPath, dependency))),
+    dependencyRelativePaths: sortStrings([...dependencyPaths].map(dependency => toVaultRelativePath(vaultRootRealPath, dependency))),
     externalReferences: sortStrings(externalReferences),
     absoluteReferences: sortStrings(absoluteReferences),
     escapedReferences: sortStrings(escapedReferences),
@@ -394,10 +394,6 @@ function findCommonDirectory(paths: string[]): string {
     }
   }
   return common;
-}
-
-function toVaultDisplayPath(vaultRoot: string, absolutePath: string): string {
-  return path.relative(vaultRoot, absolutePath).split(path.sep).join("/");
 }
 
 function sortStrings(values: Iterable<string>): string[] {

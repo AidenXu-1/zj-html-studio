@@ -5,6 +5,10 @@ export function isPathInside(root: string, candidate: string): boolean {
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
+export function toVaultRelativePath(root: string, candidate: string): string {
+  return path.relative(root, candidate).split(path.sep).join("/");
+}
+
 export function decodeRequestPath(pathname: string): string {
   let decoded: string;
   try {
