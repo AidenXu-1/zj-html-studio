@@ -137,6 +137,33 @@ describe("PreviewServer", () => {
     expect(safePage.headers["content-security-policy"]).toContain("script-src 'none'");
   });
 
+  it("injects a nonce-only search bridge only into an opted-in entry page", async () => {
+    await writeFile(
+      path.join(tempRoot, "site", "course", "课程 演示.html"),
+      '<html><body><script>window.userScriptRan=true</script><h1>课程</h1></body></html>'
+    );
+    const searchable = await server.createSession({
+      scopeRelativePath: "site",
+      entryRelativePath: path.join("site", "course", "课程 演示.html"),
+      enableSearchBridge: true
+    });
+
+    const page = await get(searchable, "/course/%E8%AF%BE%E7%A8%8B%20%E6%BC%94%E7%A4%BA.html");
+    const asset = await get(searchable, "/images/hero.svg");
+    const csp = String(page.headers["content-security-policy"]);
+
+    expect(searchable.searchChannel).toMatch(/^[a-f0-9]{48}$/);
+    expect(page.body).toContain("html-studio-search-ready");
+    expect(page.body).toContain(`const c="${searchable.searchChannel}"`);
+    expect(page.body).toMatch(/<script nonce="[a-f0-9]{36}">/);
+    expect(page.body).toContain("<script>window.userScriptRan=true</script>");
+    expect(csp).toContain("sandbox allow-scripts allow-same-origin");
+    expect(csp).toMatch(/script-src 'nonce-[a-f0-9]{36}'/);
+    expect(csp).not.toContain("script-src 'unsafe-inline'");
+    expect(String(asset.headers["content-security-policy"])).toContain("script-src 'none'");
+    expect(asset.body).not.toContain("html-studio-search-ready");
+  });
+
   it("gives stop priority over a concurrent session creation", async () => {
     await server.stop();
     server = new PreviewServer(tempRoot);

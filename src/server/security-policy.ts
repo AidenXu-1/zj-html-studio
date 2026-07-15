@@ -1,9 +1,7 @@
 import type { PreviewMode } from "../settings";
 
 const SAFE_CSP_PREFIX = [
-  "sandbox allow-same-origin",
   "default-src 'none'",
-  "script-src 'none'",
   "connect-src 'none'",
   "frame-src 'none'",
   "child-src 'none'",
@@ -28,7 +26,9 @@ const TRUSTED_CSP_DIRECTIVES = [
 ];
 
 export const SAFE_CONTENT_SECURITY_POLICY = [
+  "sandbox allow-same-origin",
   ...SAFE_CSP_PREFIX,
+  "script-src 'none'",
   "base-uri 'none'",
   "style-src 'unsafe-inline'",
   "img-src data: blob:",
@@ -37,11 +37,13 @@ export const SAFE_CONTENT_SECURITY_POLICY = [
 ].join("; ");
 export const TRUSTED_CONTENT_SECURITY_POLICY = TRUSTED_CSP_DIRECTIVES.join("; ");
 
-export function getContentSecurityPolicy(mode: PreviewMode, origin?: string): string {
+export function getContentSecurityPolicy(mode: PreviewMode, origin?: string, bridgeNonce?: string): string {
   if (mode === "trusted") return TRUSTED_CONTENT_SECURITY_POLICY;
   if (!origin) return SAFE_CONTENT_SECURITY_POLICY;
   return [
+    bridgeNonce ? "sandbox allow-scripts allow-same-origin" : "sandbox allow-same-origin",
     ...SAFE_CSP_PREFIX,
+    bridgeNonce ? `script-src 'nonce-${bridgeNonce}'` : "script-src 'none'",
     `base-uri ${origin}`,
     `style-src ${origin} 'unsafe-inline'`,
     `img-src ${origin} data: blob:`,

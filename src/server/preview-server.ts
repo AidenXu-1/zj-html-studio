@@ -9,6 +9,7 @@ import { getContentSecurityPolicy, getPermissionsPolicy } from "./security-polic
 import { getMimeType } from "./mime-types";
 import { decodeRequestPath, encodeRelativeUrlPath, isPathInside, PathRequestError, toVaultRelativePath } from "./path-safety";
 import { parseByteRange } from "./range";
+import { injectSearchBridge, MAX_SEARCH_BRIDGE_HTML_BYTES } from "./search-bridge";
 
 const HEADERS_TIMEOUT_MS = 10_000;
 const KEEP_ALIVE_TIMEOUT_MS = 3_000;
@@ -49,6 +50,7 @@ export interface PreviewResourceAccess {
 }
 
 export interface CreatePreviewSessionOptions {
+  enableSearchBridge?: boolean;
   entryRelativePath: string;
   mode?: PreviewMode;
   scopeRelativePath: string;
@@ -59,6 +61,7 @@ export interface PreviewSession {
   id: string;
   mode: PreviewMode;
   origin: string;
+  searchChannel?: string;
   scopeRelativePath: string;
   token: string;
 }
@@ -66,6 +69,8 @@ export interface PreviewSession {
 interface InternalSession extends PreviewSession {
   activeResponses: Set<ServerResponse>;
   activeStreams: Set<ReadStream>;
+  bridgeNonce?: string;
+  entryAbsolutePath: string;
   reportedDiagnostics: Set<string>;
   reportedResources: Set<string>;
   revoked: boolean;
@@ -147,8 +152,11 @@ export class PreviewServer {
         mode: options.mode ?? "safe",
         origin,
         entryUrl: `${origin}/${encodeRelativeUrlPath(relativeEntry)}`,
+        searchChannel: options.enableSearchBridge ? randomBytes(24).toString("hex") : undefined,
         scopeRelativePath: toVaultRelativePath(vaultRoot, scopeAbsolutePath),
         scopeAbsolutePath,
+        bridgeNonce: options.enableSearchBridge ? randomBytes(18).toString("hex") : undefined,
+        entryAbsolutePath,
         activeResponses: new Set(),
         activeStreams: new Set(),
         reportedDiagnostics: new Set(),
@@ -380,6 +388,27 @@ export class PreviewServer {
           return;
         }
 
+        const bridgeNonce = this.getBridgeNonce(session, resolvedPath, fileStats.size, range === null);
+        if (bridgeNonce && session.searchChannel) {
+          const sourceBuffer = Buffer.alloc(fileStats.size);
+          const { bytesRead } = await fileHandle.read(sourceBuffer, 0, sourceBuffer.length, 0);
+          if (!this.isSessionActive(session)) {
+            response.destroy();
+            return;
+          }
+          const source = sourceBuffer.subarray(0, bytesRead).toString("utf8");
+          const body = Buffer.from(injectSearchBridge(source, bridgeNonce, session.searchChannel), "utf8");
+          response.writeHead(200, {
+            ...this.securityHeaders(session.mode, session.origin, bridgeNonce),
+            "Accept-Ranges": "none",
+            "Content-Length": body.byteLength,
+            "Content-Type": "text/html; charset=utf-8"
+          });
+          if (request.method === "HEAD") response.end();
+          else response.end(body);
+          return;
+        }
+
         const contentLength = range ? range.end - range.start + 1 : fileStats.size;
         const headers: Record<string, string | number> = {
           ...this.securityHeaders(session.mode, session.origin),
@@ -535,10 +564,21 @@ export class PreviewServer {
     }
   }
 
-  private securityHeaders(mode: PreviewMode, origin?: string): Record<string, string> {
+  private getBridgeNonce(
+    session: InternalSession,
+    resolvedPath: string,
+    fileSize: number,
+    isFullResponse: boolean
+  ): string | undefined {
+    if (!isFullResponse || !session.bridgeNonce || !session.searchChannel) return undefined;
+    if (resolvedPath !== session.entryAbsolutePath || fileSize > MAX_SEARCH_BRIDGE_HTML_BYTES) return undefined;
+    return session.bridgeNonce;
+  }
+
+  private securityHeaders(mode: PreviewMode, origin?: string, bridgeNonce?: string): Record<string, string> {
     return {
       "Cache-Control": "no-store",
-      "Content-Security-Policy": getContentSecurityPolicy(mode, origin),
+      "Content-Security-Policy": getContentSecurityPolicy(mode, origin, bridgeNonce),
       "Origin-Agent-Cluster": "?1",
       "Permissions-Policy": getPermissionsPolicy(mode),
       "Referrer-Policy": "no-referrer",
@@ -552,6 +592,7 @@ export class PreviewServer {
       id: session.id,
       mode: session.mode,
       origin: session.origin,
+      searchChannel: session.searchChannel,
       scopeRelativePath: session.scopeRelativePath,
       token: session.token
     };

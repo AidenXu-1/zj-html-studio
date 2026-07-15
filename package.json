@@ -1,8 +1,8 @@
 {
   "name": "zj-html-studio",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "private": true,
-  "description": "Preview local HTML files safely with scoped resources, live reload, and full screen support.",
+  "description": "Preview, search, inspect, and embed local HTML files with scoped resources and live reload.",
   "main": "dist/main.js",
   "type": "module",
   "scripts": {

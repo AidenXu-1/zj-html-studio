@@ -5,6 +5,7 @@ import type HtmlStudioPlugin from "../main";
 import { analyzePreviewScope, type ScopeAnalysis } from "../scope/dependency-analyzer";
 import type { PreviewMode } from "../settings";
 import type { PreviewDiagnostic, PreviewSession } from "../server/preview-server";
+import type { SearchBridgeMessage } from "../server/search-bridge";
 import { BrowserOpenModal } from "../ui/browser-open-modal";
 import {
   buildAnalysisDiagnostics,
@@ -17,9 +18,13 @@ import { isFullscreenTarget, toggleFullscreenTarget } from "../ui/fullscreen";
 import { ScopeConfirmationModal } from "../ui/scope-confirmation-modal";
 import { TrustModeModal } from "../ui/trust-mode-modal";
 import { applyModeChoice, resolvePreviewMode, shouldConfirmScope } from "./preview-load-policy";
+import { isSourceReadCurrent } from "./source-read-policy";
+import { findTextOccurrences, moveSearchIndex } from "./text-search";
+import { stepPreviewZoom } from "./zoom";
 
 const BROWSER_SESSION_TTL_MS = 30 * 60 * 1_000;
 const MAX_DISPLAY_DIAGNOSTICS = 100;
+type ViewMode = "preview" | "source";
 
 interface PreviewLoadOptions {
   confirmedScopePath?: string | null;
@@ -43,16 +48,35 @@ export class HtmlPreviewView extends FileView {
   private diagnosticsRenderFrame: number | null = null;
   private fullscreenButton: HTMLButtonElement | null = null;
   private iframeHost: HTMLElement | null = null;
+  private previewCanvas: HTMLElement | null = null;
   private loadAbortController: AbortController | null = null;
   private loadGeneration = 0;
   private mode: PreviewMode = "safe";
   private modeButton: HTMLButtonElement | null = null;
+  private searchBar: HTMLElement | null = null;
+  private searchBridgeReady = false;
+  private searchButton: HTMLButtonElement | null = null;
+  private searchCount: HTMLElement | null = null;
+  private searchInput: HTMLInputElement | null = null;
+  private searchQuery = "";
   private session: PreviewSession | null = null;
+  private sourceHost: HTMLElement | null = null;
+  private sourceLoadGeneration = 0;
+  private sourcePositions: number[] = [];
+  private sourceSearchIndex = -1;
+  private sourceText: string | null = null;
+  private sourceTextarea: HTMLTextAreaElement | null = null;
   private statusEl: HTMLElement | null = null;
   private suppressedDiagnostics = 0;
   private unregisterDiagnosticSink: (() => void) | null = null;
   private unregisterAutoReloadListener: (() => void) | null = null;
   private unregisterReloadDependencies: (() => void) | null = null;
+  private viewMode: ViewMode = "preview";
+  private viewToggleButton: HTMLButtonElement | null = null;
+  private zoom = 100;
+  private zoomInButton: HTMLButtonElement | null = null;
+  private zoomLabel: HTMLButtonElement | null = null;
+  private zoomOutButton: HTMLButtonElement | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -72,11 +96,21 @@ export class HtmlPreviewView extends FileView {
 
   override async onOpen(): Promise<void> {
     this.unregisterAutoReloadListener = this.plugin.registerAutoReloadListener(() => this.updateToolbarState());
-    this.registerDomEvent(document, "fullscreenchange", () => this.updateFullscreenButton());
+    this.registerDomEvent(this.contentEl.doc, "fullscreenchange", () => this.updateFullscreenButton());
+    this.registerDomEvent(this.contentEl.win, "message", event => this.handleSearchBridgeMessage(event));
+    this.registerDomEvent(this.contentEl, "keydown", event => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "f") {
+        event.preventDefault();
+        this.openSearch();
+      }
+    });
   }
 
   override async onLoadFile(file: TFile): Promise<void> {
     this.confirmedScopePath = null;
+    this.viewMode = "preview";
+    this.zoom = 100;
+    this.searchQuery = "";
     await this.loadPreview(file);
   }
 
@@ -96,6 +130,11 @@ export class HtmlPreviewView extends FileView {
     this.diagnostics = [];
     this.suppressedDiagnostics = 0;
     this.mode = "safe";
+    this.searchBridgeReady = false;
+    this.sourceLoadGeneration += 1;
+    this.sourceText = null;
+    this.sourcePositions = [];
+    this.sourceSearchIndex = -1;
     this.contentEl.empty();
     this.contentEl.addClass("html-studio-view");
     this.renderShell();
@@ -127,6 +166,7 @@ export class HtmlPreviewView extends FileView {
         options.modeOverride
       );
       const session = await this.plugin.previewServer.createSession({
+        enableSearchBridge: true,
         entryRelativePath: file.path,
         mode,
         scopeRelativePath: analysis.scopeRelativePath
@@ -185,8 +225,13 @@ export class HtmlPreviewView extends FileView {
     if (!iframe || !this.session) return;
     const url = new URL(this.session.entryUrl);
     url.searchParams.set("html-studio-reload", Date.now().toString());
+    this.searchBridgeReady = false;
+    this.sourceLoadGeneration += 1;
+    this.sourceText = null;
     iframe.src = url.toString();
     this.setStatus("正在重新加载…", "loading");
+    this.updateSearchState();
+    if (this.viewMode === "source") void this.loadSource();
   }
 
   private beginLoad(): number {
@@ -229,6 +274,20 @@ export class HtmlPreviewView extends FileView {
     });
 
     const right = toolbar.createDiv({ cls: "html-studio-toolbar-group html-studio-toolbar-actions" });
+    this.viewToggleButton = this.createToolbarButton(right, "code-2", "源码", () => {
+      void this.toggleViewMode();
+    });
+    this.viewToggleButton.addClass("html-studio-view-toggle");
+
+    const zoomGroup = right.createDiv({ cls: "html-studio-zoom-group" });
+    this.zoomOutButton = this.createIconButton(zoomGroup, "minus", "缩小", () => this.changeZoom(-1));
+    this.zoomLabel = zoomGroup.createEl("button", { cls: "html-studio-zoom-label", text: `${this.zoom}%` });
+    this.zoomLabel.title = "回到 100%";
+    this.zoomLabel.addEventListener("click", () => this.resetZoom());
+    this.zoomInButton = this.createIconButton(zoomGroup, "plus", "放大", () => this.changeZoom(1));
+
+    this.searchButton = this.createToolbarButton(right, "search", "查找", () => this.toggleSearch());
+    this.searchButton.disabled = true;
     this.createToolbarButton(right, "refresh-cw", "刷新", () => this.refreshPreview());
     this.createToolbarButton(right, "external-link", "浏览器", () => {
       void this.promptBrowserOpen();
@@ -245,10 +304,50 @@ export class HtmlPreviewView extends FileView {
     diagnosticButton.addClass("html-studio-diagnostic-button");
     this.diagnosticBadge = diagnosticButton.createSpan({ cls: "html-studio-diagnostic-badge" });
 
+    this.renderSearchBar();
     this.statusEl = this.contentEl.createDiv({ cls: "html-studio-status" });
     const body = this.contentEl.createDiv({ cls: "html-studio-body" });
     this.iframeHost = body.createDiv({ cls: "html-studio-iframe-host" });
     this.diagnosticsDrawer = body.createDiv({ cls: "html-studio-diagnostics is-open" });
+  }
+
+  private createIconButton(
+    parent: HTMLElement,
+    iconName: string,
+    label: string,
+    callback: () => void
+  ): HTMLButtonElement {
+    const button = parent.createEl("button", { cls: "html-studio-icon-button" });
+    setIcon(button, iconName);
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    button.addEventListener("click", callback);
+    return button;
+  }
+
+  private renderSearchBar(): void {
+    const bar = this.contentEl.createDiv({ cls: "html-studio-search-bar" });
+    this.searchBar = bar;
+    const icon = bar.createSpan({ cls: "html-studio-search-icon" });
+    setIcon(icon, "search");
+    this.searchInput = bar.createEl("input", {
+      attr: { "aria-label": "查找当前 HTML 内容", placeholder: "查找当前 HTML 内容" },
+      type: "search"
+    });
+    this.searchInput.value = this.searchQuery;
+    this.searchInput.addEventListener("input", () => {
+      this.searchQuery = this.searchInput?.value ?? "";
+      this.runSearch("current");
+    });
+    this.searchInput.addEventListener("keydown", event => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      this.runSearch(event.shiftKey ? "previous" : "next");
+    });
+    this.searchCount = bar.createSpan({ cls: "html-studio-search-count", text: "0 / 0" });
+    this.createIconButton(bar, "chevron-up", "上一处", () => this.runSearch("previous"));
+    this.createIconButton(bar, "chevron-down", "下一处", () => this.runSearch("next"));
+    this.createIconButton(bar, "x", "关闭查找", () => this.closeSearch());
   }
 
   private createToolbarButton(
@@ -269,8 +368,16 @@ export class HtmlPreviewView extends FileView {
   private renderIframe(): void {
     if (!this.iframeHost || !this.session) return;
     this.iframeHost.empty();
-    const iframe = this.iframeHost.createEl("iframe", { cls: "html-studio-iframe" });
-    iframe.setAttribute("sandbox", this.mode === "trusted" ? "allow-scripts allow-same-origin" : "");
+    this.sourceHost = null;
+    this.sourceTextarea = null;
+    this.previewCanvas = this.iframeHost.createDiv({ cls: "html-studio-preview-canvas" });
+    const iframe = this.previewCanvas.createEl("iframe", { cls: "html-studio-iframe" });
+    iframe.setAttribute(
+      "sandbox",
+      this.mode === "trusted"
+        ? "allow-scripts allow-same-origin"
+        : this.session.searchChannel ? "allow-scripts" : ""
+    );
     iframe.setAttribute("allow", this.mode === "trusted" ? "clipboard-write; fullscreen" : "fullscreen");
     iframe.setAttribute("referrerpolicy", "no-referrer");
     iframe.allowFullscreen = true;
@@ -280,21 +387,208 @@ export class HtmlPreviewView extends FileView {
         issueCount === 0 ? "页面已载入，暂未发现资源问题" : `页面已载入，诊断记录了 ${issueCount} 个提醒`,
         "success"
       );
+      this.updateSearchState();
     });
     iframe.addEventListener("error", () => this.setStatus("页面容器加载失败，请打开诊断查看原因", "error"));
     const url = new URL(this.session.entryUrl);
     url.searchParams.set("html-studio-mode", this.mode);
     iframe.src = url.toString();
     this.setStatus("正在打开 HTML 页面…", "loading");
+    this.applyZoom();
+    this.applyViewMode();
+    if (this.viewMode === "source") void this.loadSource();
     this.updateFullscreenButton();
     this.renderDiagnostics();
+  }
+
+  private async toggleViewMode(): Promise<void> {
+    this.viewMode = this.viewMode === "preview" ? "source" : "preview";
+    if (this.viewMode === "source") await this.loadSource();
+    this.applyViewMode();
+    this.updateToolbarState();
+    if (this.searchBar?.hasClass("is-open")) this.runSearch("current");
+  }
+
+  private async loadSource(): Promise<void> {
+    const file = this.file;
+    if (!file || !this.iframeHost) return;
+    const generation = this.loadGeneration;
+    const filePath = file.path;
+    let sourceText = this.sourceText;
+    if (sourceText === null) {
+      const requestGeneration = ++this.sourceLoadGeneration;
+      try {
+        sourceText = await this.app.vault.cachedRead(file);
+      } catch (error) {
+        if (!isSourceReadCurrent({
+          currentFilePath: this.file?.path ?? null,
+          currentLoadGeneration: this.loadGeneration,
+          currentRequestGeneration: this.sourceLoadGeneration,
+          filePath,
+          loadGeneration: generation,
+          requestGeneration
+        })) return;
+        console.error("[ZJ HTML Studio] Source read failed", error);
+        new Notice("源码暂时无法读取，请刷新后再试。");
+        return;
+      }
+      if (!isSourceReadCurrent({
+        currentFilePath: this.file?.path ?? null,
+        currentLoadGeneration: this.loadGeneration,
+        currentRequestGeneration: this.sourceLoadGeneration,
+        filePath,
+        loadGeneration: generation,
+        requestGeneration
+      })) return;
+      this.sourceText = sourceText;
+    }
+    if (generation !== this.loadGeneration || this.file?.path !== filePath || !this.iframeHost) return;
+    if (!this.sourceHost) {
+      this.sourceHost = this.iframeHost.createDiv({ cls: "html-studio-source-host is-hidden" });
+      this.sourceTextarea = this.sourceHost.createEl("textarea", {
+        cls: "html-studio-source",
+        attr: { "aria-label": `${file.name} 只读源码`, readonly: "true", spellcheck: "false" }
+      });
+    }
+    if (this.sourceTextarea) this.sourceTextarea.value = sourceText;
+    this.applyViewMode();
+  }
+
+  private applyViewMode(): void {
+    const sourceActive = this.viewMode === "source";
+    this.previewCanvas?.toggleClass("is-hidden", sourceActive);
+    this.sourceHost?.toggleClass("is-hidden", !sourceActive);
+    this.iframeHost?.toggleClass("is-source-mode", sourceActive);
+  }
+
+  private changeZoom(direction: -1 | 1): void {
+    this.zoom = stepPreviewZoom(this.zoom, direction);
+    this.applyZoom();
+    this.updateToolbarState();
+  }
+
+  private resetZoom(): void {
+    this.zoom = 100;
+    this.applyZoom();
+    this.updateToolbarState();
+  }
+
+  private applyZoom(): void {
+    const iframe = this.getPreviewIframe();
+    if (!iframe) return;
+    const scale = this.zoom / 100;
+    iframe.setCssStyles({
+      width: `${100 / scale}%`,
+      height: `${100 / scale}%`,
+      transform: `scale(${scale})`
+    });
+  }
+
+  private toggleSearch(): void {
+    if (this.searchBar?.hasClass("is-open")) this.closeSearch();
+    else this.openSearch();
+  }
+
+  private openSearch(): void {
+    if (this.viewMode === "preview" && !this.searchBridgeReady) {
+      new Notice("页面查找还在准备，请稍后再试。");
+      return;
+    }
+    this.searchBar?.addClass("is-open");
+    this.searchInput?.focus();
+    this.searchInput?.select();
+    this.runSearch("current");
+  }
+
+  private closeSearch(): void {
+    this.searchBar?.removeClass("is-open");
+    if (this.searchQuery) {
+      this.searchQuery = "";
+      if (this.searchInput) this.searchInput.value = "";
+      this.runSearch("current");
+    }
+  }
+
+  private runSearch(direction: "current" | "next" | "previous"): void {
+    if (this.viewMode === "source") {
+      this.runSourceSearch(direction);
+      return;
+    }
+    const iframe = this.getPreviewIframe();
+    const channel = this.session?.searchChannel;
+    if (!iframe?.contentWindow || !channel || !this.searchBridgeReady) {
+      if (this.searchCount) this.searchCount.setText("准备中");
+      return;
+    }
+    iframe.contentWindow.postMessage({
+      channel,
+      direction,
+      query: this.searchQuery,
+      type: "html-studio-search"
+    }, "*");
+  }
+
+  private runSourceSearch(direction: "current" | "next" | "previous"): void {
+    if (this.sourceText === null || !this.sourceTextarea) {
+      if (this.searchCount) this.searchCount.setText("准备中");
+      return;
+    }
+    const positions = findTextOccurrences(this.sourceText, this.searchQuery);
+    if (direction === "current" || !samePositions(positions, this.sourcePositions)) {
+      this.sourcePositions = positions;
+      this.sourceSearchIndex = positions.length > 0 ? 0 : -1;
+    } else {
+      this.sourceSearchIndex = moveSearchIndex(
+        this.sourceSearchIndex,
+        positions.length,
+        direction === "previous" ? -1 : 1
+      );
+    }
+    const position = this.sourcePositions[this.sourceSearchIndex];
+    if (position !== undefined && this.searchQuery) {
+      this.sourceTextarea.focus();
+      this.sourceTextarea.setSelectionRange(position, position + this.searchQuery.trim().length);
+    } else if (!this.searchQuery) {
+      this.sourceTextarea.setSelectionRange(0, 0);
+    }
+    this.updateSearchCount(this.sourceSearchIndex + 1, this.sourcePositions.length);
+  }
+
+  private handleSearchBridgeMessage(event: MessageEvent<unknown>): void {
+    const iframe = this.getPreviewIframe();
+    const channel = this.session?.searchChannel;
+    if (!iframe?.contentWindow || event.source !== iframe.contentWindow || !channel) return;
+    if (!isSearchBridgeMessage(event.data) || event.data.channel !== channel) return;
+    if (event.data.type === "html-studio-search-ready") {
+      this.searchBridgeReady = true;
+      this.updateSearchState();
+      if (this.searchBar?.hasClass("is-open") && this.searchQuery) this.runSearch("current");
+      return;
+    }
+    if (event.data.type === "html-studio-search-open") {
+      this.openSearch();
+      return;
+    }
+    if (event.data.type === "html-studio-search-result" && event.data.query === this.searchQuery) {
+      this.updateSearchCount(event.data.current ?? 0, event.data.total ?? 0);
+    }
+  }
+
+  private updateSearchCount(current: number, total: number): void {
+    this.searchCount?.setText(`${current} / ${total}`);
+  }
+
+  private updateSearchState(): void {
+    if (!this.searchButton) return;
+    this.searchButton.disabled = this.viewMode === "preview" && !this.searchBridgeReady;
+    this.searchButton.title = this.searchButton.disabled ? "页面查找正在准备" : "查找当前 HTML 内容";
   }
 
   private async toggleFullscreen(): Promise<void> {
     const iframe = this.getPreviewIframe();
 
     try {
-      const result = await toggleFullscreenTarget(iframe, document);
+      const result = await toggleFullscreenTarget(iframe, this.contentEl.doc);
       if (result === "not-ready") new Notice("HTML 页面还在准备，请稍后再试。");
       if (result === "unsupported") new Notice("当前系统不支持这个全屏方式。");
     } catch (error) {
@@ -308,14 +602,14 @@ export class HtmlPreviewView extends FileView {
   private updateFullscreenButton(): void {
     if (!this.fullscreenButton) return;
     const iframe = this.getPreviewIframe();
-    const active = isFullscreenTarget(iframe, document);
+    const active = isFullscreenTarget(iframe, this.contentEl.doc);
     const label = active ? "退出全屏" : "全屏";
 
     this.fullscreenButton.empty();
     const icon = this.fullscreenButton.createSpan();
     setIcon(icon, active ? "minimize-2" : "maximize-2");
     this.fullscreenButton.createSpan({ text: label });
-    this.fullscreenButton.disabled = iframe === null;
+    this.fullscreenButton.disabled = iframe === null || this.viewMode === "source";
     this.fullscreenButton.toggleClass("is-active", active);
     this.fullscreenButton.setAttribute("aria-label", label);
     this.fullscreenButton.setAttribute("aria-pressed", active.toString());
@@ -328,7 +622,7 @@ export class HtmlPreviewView extends FileView {
 
   private renderDiagnostics(): void {
     if (this.diagnosticsRenderFrame !== null) {
-      cancelAnimationFrame(this.diagnosticsRenderFrame);
+      this.contentEl.win.cancelAnimationFrame(this.diagnosticsRenderFrame);
       this.diagnosticsRenderFrame = null;
     }
     if (!this.diagnosticsDrawer) return;
@@ -474,6 +768,7 @@ export class HtmlPreviewView extends FileView {
     if (!file || this.session?.token !== previousToken) return false;
 
     const nextSession = await this.plugin.previewServer.createSession({
+      enableSearchBridge: true,
       entryRelativePath: file.path,
       mode,
       scopeRelativePath: analysis.scopeRelativePath
@@ -487,6 +782,7 @@ export class HtmlPreviewView extends FileView {
     this.unregisterDiagnosticSink = null;
     this.session = nextSession;
     this.mode = mode;
+    this.searchBridgeReady = false;
     const initialDiagnostics = buildAnalysisDiagnostics(analysis, MAX_DISPLAY_DIAGNOSTICS);
     this.diagnostics = initialDiagnostics;
     this.suppressedDiagnostics = Math.max(0, countAnalysisDiagnostics(analysis) - initialDiagnostics.length);
@@ -588,6 +884,26 @@ export class HtmlPreviewView extends FileView {
       this.autoReloadButton.setAttribute("aria-pressed", this.plugin.settings.autoReload.toString());
     }
 
+    if (this.viewToggleButton) {
+      const sourceActive = this.viewMode === "source";
+      this.viewToggleButton.empty();
+      const icon = this.viewToggleButton.createSpan();
+      setIcon(icon, sourceActive ? "panel-top" : "code-2");
+      this.viewToggleButton.createSpan({ text: sourceActive ? "预览" : "源码" });
+      this.viewToggleButton.toggleClass("is-active", sourceActive);
+      this.viewToggleButton.setAttribute("aria-pressed", sourceActive.toString());
+    }
+
+    const zoomDisabled = this.viewMode === "source";
+    if (this.zoomLabel) {
+      this.zoomLabel.setText(`${this.zoom}%`);
+      this.zoomLabel.disabled = zoomDisabled;
+    }
+    if (this.zoomOutButton) this.zoomOutButton.disabled = zoomDisabled || this.zoom <= 50;
+    if (this.zoomInButton) this.zoomInButton.disabled = zoomDisabled || this.zoom >= 200;
+    this.updateSearchState();
+    this.updateFullscreenButton();
+
     this.renderDiagnostics();
   }
 
@@ -616,9 +932,10 @@ export class HtmlPreviewView extends FileView {
     preserveReloadRegistration?: boolean;
   } = {}): Promise<void> {
     const iframe = this.getPreviewIframe();
-    if (isFullscreenTarget(iframe, document) && document.exitFullscreen) {
+    const doc = this.contentEl.doc;
+    if (isFullscreenTarget(iframe, doc) && doc.exitFullscreen) {
       try {
-        await document.exitFullscreen();
+        await doc.exitFullscreen();
       } catch (error) {
         console.error("[ZJ HTML Studio] Fullscreen cleanup failed", error);
       }
@@ -692,4 +1009,19 @@ export class HtmlPreviewView extends FileView {
 
 function isAbortError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
+}
+
+function isSearchBridgeMessage(value: unknown): value is SearchBridgeMessage {
+  if (typeof value !== "object" || value === null) return false;
+  if (!("channel" in value) || typeof value.channel !== "string") return false;
+  if (!("type" in value) || typeof value.type !== "string") return false;
+  return [
+    "html-studio-search-open",
+    "html-studio-search-ready",
+    "html-studio-search-result"
+  ].includes(value.type);
+}
+
+function samePositions(first: number[], second: number[]): boolean {
+  return first.length === second.length && first.every((position, index) => position === second[index]);
 }

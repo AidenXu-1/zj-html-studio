@@ -25,4 +25,14 @@ describe("preview security policies", () => {
     expect(TRUSTED_CONTENT_SECURITY_POLICY).toContain("connect-src 'self' http: https: ws: wss:");
     expect(getPermissionsPolicy("trusted")).toContain("clipboard-write=(self)");
   });
+
+  it("allows only the plugin nonce when a safe search bridge is enabled", () => {
+    const csp = getContentSecurityPolicy("safe", "http://token.localhost:1234", "bridge-nonce");
+
+    expect(csp).toContain("sandbox allow-scripts allow-same-origin");
+    expect(csp).toContain("script-src 'nonce-bridge-nonce'");
+    expect(csp).not.toContain("script-src 'unsafe-inline'");
+    expect(csp).not.toContain("script-src 'none'");
+    expect(csp).toContain("connect-src 'none'");
+  });
 });

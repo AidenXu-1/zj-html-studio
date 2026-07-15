@@ -1,6 +1,8 @@
 import { FileSystemAdapter, Notice, Plugin } from "obsidian";
 import { shell } from "electron";
 import path from "node:path";
+import { registerHtmlEmbedExtensions } from "./embed/embed-registry";
+import { EmbedSessionLimiter } from "./embed/embed-session-limiter";
 import { BoundedPathChangeLog, PreviewReloadRegistry } from "./reload/preview-reload-registry";
 import {
   addSafeScope,
@@ -23,6 +25,7 @@ export default class HtmlStudioPlugin extends Plugin {
   previewServer!: PreviewServer;
   vaultBasePath = "";
   private readonly diagnosticSinks = new Map<string, (diagnostic: PreviewDiagnostic) => void>();
+  private readonly embedSessionLimiter = new EmbedSessionLimiter(8);
   private readonly autoReloadListeners = new Set<() => void>();
   private readonly pathChangeLog = new BoundedPathChangeLog();
   private nextReloadRegistrationId = 0;
@@ -62,6 +65,14 @@ export default class HtmlStudioPlugin extends Plugin {
 
     this.registerView(HTML_PREVIEW_VIEW_TYPE, leaf => new HtmlPreviewView(leaf, this));
     this.registerExtensions(["html", "htm"], HTML_PREVIEW_VIEW_TYPE);
+    try {
+      if (!registerHtmlEmbedExtensions(this, this.embedSessionLimiter)) {
+        console.warn(`${LOG_PREFIX} This Obsidian version does not expose the HTML embed registry.`);
+      }
+    } catch (error) {
+      console.error(`${LOG_PREFIX} HTML embed registration failed`, error);
+      new Notice("HTML 标签页可以继续使用，但笔记内嵌入没有注册成功。");
+    }
     this.register(() => {
       this.diagnosticSinks.clear();
       this.autoReloadListeners.clear();
@@ -72,13 +83,15 @@ export default class HtmlStudioPlugin extends Plugin {
       });
     });
 
-    this.registerEvent(this.app.vault.on("modify", file => this.notifyFileChanged(file.path)));
-    this.registerEvent(this.app.vault.on("create", file => this.notifyFileChanged(file.path)));
-    this.registerEvent(this.app.vault.on("delete", file => this.notifyFileChanged(file.path)));
-    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
-      this.notifyFileChanged(oldPath);
-      this.notifyFileChanged(file.path);
-    }));
+    this.app.workspace.onLayoutReady(() => {
+      this.registerEvent(this.app.vault.on("modify", file => this.notifyFileChanged(file.path)));
+      this.registerEvent(this.app.vault.on("create", file => this.notifyFileChanged(file.path)));
+      this.registerEvent(this.app.vault.on("delete", file => this.notifyFileChanged(file.path)));
+      this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+        this.notifyFileChanged(oldPath);
+        this.notifyFileChanged(file.path);
+      }));
+    });
 
     this.addCommand({
       id: "reload-current-preview",
