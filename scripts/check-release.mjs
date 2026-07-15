@@ -57,6 +57,7 @@ for (const requiredFile of [
 
 const manifest = await readJson("manifest.json");
 const packageJson = await readJson("package.json");
+const packageLockText = await readFile(path.join(ROOT, "package-lock.json"), "utf8");
 const versions = await readJson("versions.json");
 const semverPattern = /^\d+\.\d+\.\d+$/;
 
@@ -78,6 +79,8 @@ check(packageJson.version === manifest.version, "package.json version must match
 check(packageJson.license && packageJson.license !== "UNLICENSED", "package.json must declare the chosen license.");
 check(versions[manifest.version] === manifest.minAppVersion, "versions.json must map the current plugin version to minAppVersion.");
 check(!packageJson.dependencies || Object.keys(packageJson.dependencies).length === 0, "Runtime dependencies require an explicit release review.");
+check(!/(?:\/Users\/|[A-Za-z]:\\Users\\|\/home\/[A-Za-z0-9._-]+\/)/.test(packageLockText), "package-lock.json must not contain a local user directory.");
+check(!/"resolved"\s*:\s*"file:/i.test(packageLockText), "package-lock.json must not contain local file dependencies.");
 
 for (const forbiddenPath of ["AGENTS.md", "CLAUDE.md", "docs", "design", "scratch"]) {
   check(!await fileExists(forbiddenPath), `Internal-only path must not enter the public repository: ${forbiddenPath}`);
