@@ -4,7 +4,7 @@ All notable changes to ZJ HTML Studio are documented here.
 
 ## 0.1.3 - 2026-07-15
 
-First public release candidate.
+First public release.
 
 - Preview local HTML and HTM files in native Obsidian tabs.
 - Support scoped local resources, parent paths, Chinese paths, query strings, modules, and media ranges.
