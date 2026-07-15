@@ -4,6 +4,20 @@
 
 <p align="center">课程页面 · 分享会 · 公众号排版 · 交互演示</p>
 
+## English overview
+
+ZJ HTML Studio lets Obsidian Desktop open local `.html` and `.htm` files in native tabs. It supports scoped local resources, safe and trusted modes, live reload, read-only source view, page zoom, in-page search, fullscreen, and Markdown embeds.
+
+### Installation and usage
+
+1. Install **ZJ HTML Studio** from **Settings → Community plugins → Browse** after it is listed, or download `main.js`, `manifest.json`, and `styles.css` from the matching [GitHub Release](https://github.com/AidenXu-1/zj-html-studio/releases) and place them in `<vault>/.obsidian/plugins/zj-html-studio/`.
+2. Enable the plugin in **Settings → Community plugins**.
+3. Click an `.html` or `.htm` file in the file explorer to preview it.
+4. Keep unfamiliar files in **Safe read-only** mode. Switch to **Trusted compatibility** only for HTML you created or reviewed.
+5. To embed a page in Markdown, use `![[page.html]]`, `![[page.html|760]]`, or `![[page.html|760x430]]`.
+
+The plugin is desktop-only and requires Obsidian 1.12.7 or later. It does not collect telemetry or send vault content to a developer-operated service. Local previews bind only to `127.0.0.1` and are limited to the resource scope shown in the toolbar.
+
 ## 它解决什么
 
 许多课程、分享会、公众号排版和 AI 生成页面最终都会变成 HTML 文件。文件虽然保存在 Obsidian 仓库里，却常常需要离开 Obsidian，再到 Finder 或浏览器中打开。
