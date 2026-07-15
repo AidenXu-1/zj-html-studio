@@ -1,0 +1,10 @@
+{
+  "id": "zj-html-studio",
+  "name": "ZJ HTML Studio",
+  "version": "0.1.3",
+  "minAppVersion": "1.12.7",
+  "description": "Preview local HTML files safely with scoped resources, live reload, and full screen support.",
+  "author": "兆基",
+  "authorUrl": "https://github.com/AidenXu-1",
+  "isDesktopOnly": true
+}
