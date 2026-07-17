@@ -6,14 +6,14 @@
 
 ## English overview
 
-ZJ HTML Studio lets Obsidian Desktop open local `.html` and `.htm` files in native tabs. It supports scoped local resources, safe and trusted modes, live reload, read-only source view, page zoom, in-page search, fullscreen, and Markdown embeds.
+ZJ HTML Studio lets Obsidian Desktop open local `.html` and `.htm` files in native tabs. It supports scoped local resources, safe read-only, local interactive and trusted compatibility modes, live reload, read-only source view, page zoom, in-page search, fullscreen, and Markdown embeds.
 
 ### Installation and usage
 
-1. Install **ZJ HTML Studio** from **Settings → Community plugins → Browse** after it is listed, or download `main.js`, `manifest.json`, and `styles.css` from the matching [GitHub Release](https://github.com/AidenXu-1/zj-html-studio/releases) and place them in `<vault>/.obsidian/plugins/zj-html-studio/`.
+1. Install **ZJ HTML Studio** from **Settings → Community plugins → Browse**, or download `main.js`, `manifest.json`, and `styles.css` from the matching [GitHub Release](https://github.com/AidenXu-1/zj-html-studio/releases) and place them in `<vault>/.obsidian/plugins/zj-html-studio/`.
 2. Enable the plugin in **Settings → Community plugins**.
 3. Click an `.html` or `.htm` file in the file explorer to preview it.
-4. Keep unfamiliar files in **Safe read-only** mode. Switch to **Trusted compatibility** only for HTML you created or reviewed.
+4. Keep unfamiliar files in **Safe read-only** mode. Use **Local interactive** only for local pages you created and inspected; it blocks common fetch/XHR/WebSocket traffic but does not claim absolute offline isolation for navigation or WebRTC. Use **Trusted compatibility** only when a reviewed page also needs remote resources or network APIs.
 5. To embed a page in Markdown, use `![[page.html]]`, `![[page.html|760]]`, or `![[page.html|760x430]]`.
 
 The plugin is desktop-only and requires Obsidian 1.12.7 or later. It does not collect telemetry or send vault content to a developer-operated service. Local previews bind only to `127.0.0.1` and are limited to the resource scope shown in the toolbar.
@@ -49,21 +49,24 @@ ZJ HTML Studio 为 `.html` 和 `.htm` 注册原生标签页视图。点击文件
 - 在 Markdown 中嵌入 HTML，支持默认尺寸、指定宽度和指定宽高。
 - 笔记内嵌采用延迟加载、离屏回收和全局 8 会话上限，避免长笔记无界占用资源。
 
-## 两种安全模式
+## 三种打开模式
 
 | 模式 | 适合什么页面 | 能做什么 |
 |---|---|---|
-| **安全只读**，默认 | 来源不明、只需查看排版的 HTML | 显示本地排版与媒体，关闭页面脚本、后台联网、外部子资源、表单、嵌套页面、Worker 和剪贴板能力 |
+| **安全只读**，默认 | 来源不明、只需查看排版的 HTML | 显示本地排版与媒体，关闭页面脚本、常见后台请求、外部子资源、表单、嵌套页面、Worker 和剪贴板能力 |
+| **本地交互** | 你自己制作并检查过、靠 JavaScript 渲染正文的本地课件 | 允许页面脚本和当前资源范围中的脚本，阻止常见 fetch/XHR/WebSocket、外部子资源、Worker、嵌套页、表单、剪贴板和 `unsafe-eval`；页面导航及 WebRTC 不作绝对离线承诺 |
 | **可信兼容** | 你自己制作或已经审查过的交互页面 | 允许脚本、模块、联网请求和剪贴板写入，同时继续限制页面只能读取工具栏显示的本地资源范围 |
 
-安全只读模式中的链接或页面跳转仍可能离开本地预览地址。打开陌生 HTML 时，请先检查链接去向。
+三种模式中的链接或页面跳转都仍可能离开本地预览地址。本地交互会执行页面脚本，当前 Chromium 不会执行 `webrtc 'none'`，因此只用于自己制作并检查过的文件。陌生 HTML 保持安全只读。
+
+如果页面的正文由 JavaScript 动态生成，安全只读会显示明确提醒和“本地交互打开”按钮，不再把纯背景或黑屏当成正常加载。
 
 ## 快速使用
 
 1. 在 **设置 → 第三方插件** 中启用 ZJ HTML Studio。
 2. 在文件列表中点击 `.html` 或 `.htm` 文件。
 3. 查看工具栏显示的安全模式与资源范围。
-4. 陌生页面保持“安全只读”；确实需要交互时，再主动切换到“可信兼容”。
+4. 陌生页面保持“安全只读”；自己生成的本地脚本课件优先用“本地交互”；需要联网或远程资源时再使用“可信兼容”。
 
 工具栏提供刷新、自动刷新、浏览器打开、全屏、源文件定位、安全模式、资源范围和诊断入口。
 
@@ -79,7 +82,7 @@ ZJ HTML Studio 为 `.html` 和 `.htm` 注册原生标签页视图。点击文件
 - 第二种指定宽度，高度仍为默认值。
 - 第三种指定宽高，笔记变窄时会按比例缩小。
 
-嵌入会沿用文件夹的安全/可信规则。若页面需要读取较大范围，会先显示确认入口。Canvas 预览本轮未开启，会提供“在标签页打开”按钮。
+嵌入会沿用文件夹的安全/本地交互/可信规则。安全只读检测到页面脚本时，可对当前嵌入临时切换到本地交互。若页面需要读取较大范围，会先显示确认入口。Canvas 预览本轮未开启，会提供“在标签页打开”按钮。
 
 ## 隐私与安全
 
@@ -89,10 +92,13 @@ ZJ HTML Studio 为 `.html` 和 `.htm` 注册原生标签页视图。点击文件
 - **插件自身联网**：不会连接开发者运营的服务器，也没有云端处理流程。
 - **本地预览服务**：只绑定 `127.0.0.1`，使用系统随机端口；最后一个预览关闭或插件停用后自动停止。
 - **文件读取**：只读取当前仓库内、工具栏明确显示的资源范围；阻止仓库越界、目录遍历和符号链接逃逸。
-- **可信页面联网**：只有切换到“可信兼容”后，页面自身才可能访问它引用的远程服务。
-- **本地存储**：仅通过插件的 `data.json` 保存自动刷新偏好，以及用户明确记住的可信或安全目录规则。
+- **常见远程访问**：只有切换到“可信兼容”后，页面才能使用常见 HTTP/API 请求和远程子资源。
+- **本地交互的边界**：Obsidian 1.12.7 实机探针表明当前 Chromium 不执行 `webrtc 'none'`。本地交互会阻止已列出的常见请求通道，但 WebRTC 仍可产生网络活动。
+- **本地存储**：仅通过插件的 `data.json` 保存自动刷新偏好，以及用户明确记住的安全、本地交互或可信目录规则。
 - **内容处理**：不修改 HTML 及其依赖，不保存页面正文副本。
 - **页内查找**：安全模式只运行插件注入、带一次性密钥的最小查找桥；用户 HTML 里的脚本仍会被阻止。
+- **查找结果**：安全只读在有界预检后使用 Chromium 原生定位；本地交互与可信兼容使用可取消、分片执行的有界 DOM 定位，并明确标记“部分受限”，避免页面脚本制造的封闭区域或巨大 DOM 卡住 Obsidian。源码模式提供精确计数。
+- **HTML 大小**：为保证编码验证、并发保存和实际响应使用同一份内容，单个 HTML 上限为 32 MiB；最多同时保留两份快照，正常的多标签恢复会进入有界等待队列。较大的图片、视频和字体应拆为独立资源文件。
 - **日志与诊断**：诊断只记录路径和失败原因，不保存页面正文。
 - **数据收集**：没有遥测、统计分析、广告、用户画像或自更新机制。
 - **公开仓库隐私**：源码、测试和文档使用虚构夹具，不包含真实知识库内容、本机绝对路径、个人邮箱、访问令牌或真实工作截图。
@@ -101,7 +107,7 @@ ZJ HTML Studio 为 `.html` 和 `.htm` 注册原生标签页视图。点击文件
 
 ### Obsidian 第三方插件市场
 
-通过社区审核后，可在 **设置 → 第三方插件 → 浏览** 中搜索 **ZJ HTML Studio** 并安装。
+插件已进入 Obsidian 官方社区插件目录，可在 **设置 → 第三方插件 → 浏览** 中搜索 **ZJ HTML Studio** 并安装。官方清单仍注明尚未经过 Obsidian staff 人工审核。
 
 ### 手动安装
 
@@ -124,8 +130,8 @@ ZJ HTML Studio 为 `.html` 和 `.htm` 注册原生标签页视图。点击文件
 - 最低 Obsidian 版本：`1.12.7`
 - 支持平台：macOS、Windows、Linux 桌面端
 - 不支持移动端，因为插件使用 Node.js 与 Electron 能力
-- `0.2.0` 已在 macOS / Obsidian 1.12.7 完成标签页、搜索、源码、缩放、全屏、Markdown 嵌入与回收的真实运行验收
-- 自动检查会在 macOS、Windows、Linux 上执行 lint、类型检查、91 项测试、生产构建、发布资产校验和高危依赖审计
+- `0.3.0` 本地候选版已在 macOS / Obsidian 1.12.7 完成安全只读脚本提示、本地交互课件渲染与翻页、Markdown 嵌入、三态往返和最后会话回收的真实运行验收；尚未获准公开发布
+- 当前完整门禁包含 20 个测试文件、286 项测试；CI 会在 macOS、Windows、Linux 执行同一套 lint、类型检查、测试、生产构建、发布资产校验和高危依赖审计
 
 Markdown HTML 嵌入会在启动时检查当前 Obsidian 是否提供扩展嵌入能力。若未来版本取消该能力，只会停用笔记内嵌并给出提示，HTML 原生标签页与其他功能仍可继续使用。
 
@@ -142,11 +148,11 @@ npm run check
 
 1. Obsidian 官方 ESLint 规则
 2. TypeScript 严格类型检查
-3. 13 个测试文件、91 项自动测试
+3. 20 个测试文件、286 项自动测试
 4. 最小化生产构建
 5. Release 安装文件一致性检查
 
-插件没有运行时第三方依赖。生产安装文件合计约 101 KiB；`node_modules/`、`dist/`、本地设置、日志和环境变量文件均不会进入 Git 历史。
+插件没有运行时第三方依赖。当前生产安装文件合计约 235 KiB；`node_modules/`、`dist/`、本地设置、日志和环境变量文件均不会进入 Git 历史。
 
 ## 为什么仓库保留这些文件
 

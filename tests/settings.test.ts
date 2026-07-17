@@ -1,15 +1,25 @@
 import { describe, expect, it } from "vitest";
 import {
+  addInteractiveScope,
   addSafeScope,
   addTrustedScope,
+  getHtmlPermissionScopePath,
   isScopeTrusted,
   normalizeScopePath,
+  removeInteractiveScope,
   removeSafeScope,
   removeTrustedScope,
+  resolveScopeMode,
   SerializedSettingsUpdater
 } from "../src/settings";
 
 describe("trusted scope settings", () => {
+  it("derives permission inheritance from the entry folder, not the resource scope", () => {
+    expect(getHtmlPermissionScopePath("output/course/page.html")).toBe("output/course");
+    expect(getHtmlPermissionScopePath("page.html")).toBe("");
+    expect(getHtmlPermissionScopePath("output\\course\\page.html")).toBe("output/course");
+  });
+
   it("normalizes vault paths", () => {
     expect(normalizeScopePath("/outputs\\courses/./demo")).toBe("outputs/courses/demo");
     expect(normalizeScopePath("outputs/courses/../assets")).toBe("outputs/assets");
@@ -64,6 +74,28 @@ describe("trusted scope settings", () => {
     expect(safeScopes).toEqual(["output", "output/course/lesson"]);
   });
 
+  it("resolves safe, local interaction, and trusted rules by the most specific folder", () => {
+    const safeScopes = ["output/course/lesson/private"];
+    const interactiveScopes = ["output/course"];
+    const trustedScopes = ["output", "output/course/lesson"];
+
+    expect(resolveScopeMode("output/share", trustedScopes, safeScopes, interactiveScopes)).toBe("trusted");
+    expect(resolveScopeMode("output/course/demo", trustedScopes, safeScopes, interactiveScopes)).toBe("interactive");
+    expect(resolveScopeMode("output/course/lesson/demo", trustedScopes, safeScopes, interactiveScopes)).toBe("trusted");
+    expect(resolveScopeMode("output/course/lesson/private/page", trustedScopes, safeScopes, interactiveScopes)).toBe("safe");
+  });
+
+  it("uses the lower-privilege mode when legacy data contains same-depth conflicts", () => {
+    expect(resolveScopeMode("output/course", ["output"], ["output"], ["output"])).toBe("safe");
+    expect(resolveScopeMode("output/course", ["output"], [], ["output"])).toBe("interactive");
+  });
+
+  it("adds and removes an exact local-interaction rule without flattening descendants", () => {
+    const interactive = addInteractiveScope("output", ["output/course"]);
+    expect(interactive).toEqual(["output", "output/course"]);
+    expect(removeInteractiveScope("output", interactive)).toEqual(["output/course"]);
+  });
+
   it("does not erase a deeper safe exception when a trusted parent becomes safe", () => {
     const trustedScopes = removeTrustedScope("output", ["output", "output/course"]);
     const safeScopes = addSafeScope(
@@ -95,7 +127,12 @@ describe("trusted scope settings", () => {
   });
 
   it("serializes concurrent settings writes against the latest committed value", async () => {
-    let current = { autoReload: true, safeScopes: [] as string[], trustedScopes: [] as string[] };
+    let current = {
+      autoReload: true,
+      interactiveScopes: [] as string[],
+      safeScopes: [] as string[],
+      trustedScopes: [] as string[]
+    };
     const saved: typeof current[] = [];
     let releaseFirst: (() => void) | undefined;
     const updater = new SerializedSettingsUpdater(
@@ -122,6 +159,7 @@ describe("trusted scope settings", () => {
 
     expect(current).toEqual({
       autoReload: false,
+      interactiveScopes: [],
       safeScopes: [],
       trustedScopes: ["output/course"]
     });

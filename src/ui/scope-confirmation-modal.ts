@@ -1,15 +1,19 @@
 import { Modal, setIcon, type App } from "obsidian";
 import type { ScopeAnalysis } from "../scope/dependency-analyzer";
+import {
+  canOfferEntryFolderSafeTrial,
+  type ScopeConfirmationDecision
+} from "../scope/resource-scope-policy";
 
 export class ScopeConfirmationModal extends Modal {
-  private resolveDecision: ((approved: boolean) => void) | null = null;
+  private resolveDecision: ((decision: ScopeConfirmationDecision) => void) | null = null;
   private settled = false;
 
   constructor(app: App, private readonly analysis: ScopeAnalysis) {
     super(app);
   }
 
-  waitForDecision(): Promise<boolean> {
+  waitForDecision(): Promise<ScopeConfirmationDecision> {
     return new Promise(resolve => {
       this.resolveDecision = resolve;
       this.open();
@@ -17,7 +21,7 @@ export class ScopeConfirmationModal extends Modal {
   }
 
   cancel(): void {
-    this.settle(false);
+    this.settle("cancel");
     this.close();
   }
 
@@ -39,20 +43,27 @@ export class ScopeConfirmationModal extends Modal {
 
     const footer = this.contentEl.createDiv({ cls: "html-studio-trust-footer" });
     footer.createSpan({
-      text: "确认只负责创建资源范围；页面脚本是否运行仍由安全/可信模式决定。"
+      text: "确认只负责创建资源范围；页面脚本是否运行仍由安全只读、本地交互或可信兼容决定。"
     });
     const actions = footer.createDiv({ cls: "html-studio-trust-actions" });
     const cancel = actions.createEl("button", { text: "取消打开" });
     cancel.addEventListener("click", () => this.cancel());
+    if (canOfferEntryFolderSafeTrial(this.analysis)) {
+      const safeTrial = actions.createEl("button", { text: "先按当前文件夹安全打开" });
+      safeTrial.addEventListener("click", () => {
+        this.settle("entry-folder-safe");
+        this.close();
+      });
+    }
     const confirm = actions.createEl("button", { cls: "mod-cta", text: "确认这个范围" });
     confirm.addEventListener("click", () => {
-      this.settle(true);
+      this.settle("requested-scope");
       this.close();
     });
   }
 
   override onClose(): void {
-    this.settle(false);
+    this.settle("cancel");
     this.contentEl.empty();
   }
 
@@ -65,10 +76,10 @@ export class ScopeConfirmationModal extends Modal {
     return reasons.length > 0 ? reasons.join("；") : "资源范围比 HTML 所在文件夹更大";
   }
 
-  private settle(approved: boolean): void {
+  private settle(decision: ScopeConfirmationDecision): void {
     if (this.settled) return;
     this.settled = true;
-    this.resolveDecision?.(approved);
+    this.resolveDecision?.(decision);
     this.resolveDecision = null;
   }
 }

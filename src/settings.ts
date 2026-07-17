@@ -1,13 +1,15 @@
-export type PreviewMode = "safe" | "trusted";
+export type PreviewMode = "safe" | "interactive" | "trusted";
 
 export interface HtmlStudioSettings {
   autoReload: boolean;
+  interactiveScopes: string[];
   safeScopes: string[];
   trustedScopes: string[];
 }
 
 export const DEFAULT_SETTINGS: HtmlStudioSettings = {
   autoReload: true,
+  interactiveScopes: [],
   safeScopes: [],
   trustedScopes: []
 };
@@ -49,17 +51,42 @@ export function normalizeScopePath(scopePath: string): string {
   return normalized.join("/");
 }
 
+export function getHtmlPermissionScopePath(entryRelativePath: string): string {
+  const normalizedEntryPath = normalizeScopePath(entryRelativePath);
+  const lastSeparator = normalizedEntryPath.lastIndexOf("/");
+  return lastSeparator < 0 ? "" : normalizedEntryPath.slice(0, lastSeparator);
+}
+
 export function isScopeTrusted(
   scopePath: string,
   trustedScopes: readonly string[],
-  safeScopes: readonly string[] = []
+  safeScopes: readonly string[] = [],
+  interactiveScopes: readonly string[] = []
 ): boolean {
-  const normalizedScope = normalizeScopePath(scopePath);
-  if (!normalizedScope) return false;
+  return resolveScopeMode(scopePath, trustedScopes, safeScopes, interactiveScopes) === "trusted";
+}
 
-  const trustedDepth = deepestMatchingScope(normalizedScope, trustedScopes);
-  const safeDepth = deepestMatchingScope(normalizedScope, safeScopes);
-  return trustedDepth >= 0 && trustedDepth > safeDepth;
+export function resolveScopeMode(
+  scopePath: string,
+  trustedScopes: readonly string[],
+  safeScopes: readonly string[] = [],
+  interactiveScopes: readonly string[] = []
+): PreviewMode {
+  const normalizedScope = normalizeScopePath(scopePath);
+  if (!normalizedScope) return "safe";
+
+  const candidates: Array<{ depth: number; mode: PreviewMode; privilege: number }> = [
+    { depth: deepestMatchingScope(normalizedScope, safeScopes), mode: "safe", privilege: 0 },
+    { depth: deepestMatchingScope(normalizedScope, interactiveScopes), mode: "interactive", privilege: 1 },
+    { depth: deepestMatchingScope(normalizedScope, trustedScopes), mode: "trusted", privilege: 2 }
+  ];
+  let selected = candidates[0]!;
+  for (const candidate of candidates.slice(1)) {
+    if (candidate.depth > selected.depth || (candidate.depth === selected.depth && candidate.privilege < selected.privilege)) {
+      selected = candidate;
+    }
+  }
+  return selected.depth < 0 ? "safe" : selected.mode;
 }
 
 export function addTrustedScope(
@@ -80,6 +107,22 @@ export function addTrustedScope(
 export function removeTrustedScope(scopePath: string, trustedScopes: readonly string[]): string[] {
   const normalizedScope = normalizeScopePath(scopePath);
   return trustedScopes.filter(existing => normalizeScopePath(existing) !== normalizedScope);
+}
+
+export function addInteractiveScope(scopePath: string, interactiveScopes: readonly string[]): string[] {
+  const normalizedScope = normalizeScopePath(scopePath);
+  if (!normalizedScope) return [...interactiveScopes];
+  if (interactiveScopes.some(existing => normalizeScopePath(existing) === normalizedScope)) return [...interactiveScopes];
+
+  return [
+    ...interactiveScopes.filter(existing => normalizeScopePath(existing) !== normalizedScope),
+    normalizedScope
+  ].sort((left, right) => left.localeCompare(right));
+}
+
+export function removeInteractiveScope(scopePath: string, interactiveScopes: readonly string[]): string[] {
+  const normalizedScope = normalizeScopePath(scopePath);
+  return interactiveScopes.filter(existing => normalizeScopePath(existing) !== normalizedScope);
 }
 
 export function addSafeScope(

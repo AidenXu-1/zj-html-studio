@@ -44,9 +44,18 @@ export class BrowserOpenModal extends Modal {
     );
     this.createAction(
       choices,
+      "mouse-pointer-click",
+      "本地交互打开",
+      "允许页面脚本和范围内资源；常见 fetch、XHR、WebSocket、外部资源、Worker、嵌套页面、表单和剪贴板受阻。页面导航和 WebRTC 仍可能产生网络活动。",
+      "本地交互",
+      "mod-cta",
+      () => this.choose("interactive")
+    );
+    this.createAction(
+      choices,
       "shield-alert",
       "可信浏览器打开",
-      "页面可以运行脚本、联网，并读取下面资源范围。只用于你自己生成或确认可信的页面。",
+      "页面可以运行脚本、联网、使用剪贴板，并读取下面资源范围。只用于你自己生成或确认可信的页面。",
       "授权并打开",
       "mod-warning",
       () => this.choose("trusted")
@@ -84,11 +93,7 @@ export class BrowserOpenModal extends Modal {
     copy.createEl("strong", { text: title });
     copy.createEl("p", { text: description });
     const button = card.createEl("button", { text: buttonText, cls: `html-studio-browser-action ${buttonClass}` });
-    button.addEventListener("click", event => {
-      event.stopPropagation();
-      action();
-    });
-    card.addEventListener("click", action);
+    button.addEventListener("click", action);
   }
 
   private choose(mode: PreviewMode): void {

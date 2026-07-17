@@ -1,34 +1,47 @@
 import { FileSystemAdapter, Notice, Plugin } from "obsidian";
 import { shell } from "electron";
-import path from "node:path";
 import { registerHtmlEmbedExtensions } from "./embed/embed-registry";
 import { EmbedSessionLimiter } from "./embed/embed-session-limiter";
 import { BoundedPathChangeLog, PreviewReloadRegistry } from "./reload/preview-reload-registry";
+import { canonicalizeVaultBasePath, toVaultRelativePath } from "./scope/vault-path";
 import {
+  addInteractiveScope,
   addSafeScope,
   addTrustedScope,
   DEFAULT_SETTINGS,
-  isScopeTrusted,
   normalizeScopePath,
+  removeInteractiveScope,
   removeSafeScope,
   removeTrustedScope,
+  resolveScopeMode,
   SerializedSettingsUpdater,
-  type HtmlStudioSettings
+  type HtmlStudioSettings,
+  type PreviewMode
 } from "./settings";
 import { PreviewServer, type PreviewDiagnostic } from "./server/preview-server";
+import { HtmlStudioSettingTab } from "./ui/settings-tab";
 import { HtmlPreviewView, HTML_PREVIEW_VIEW_TYPE } from "./view/html-preview-view";
 
 const LOG_PREFIX = "[ZJ HTML Studio]";
 
+export interface ScopeModeChange {
+  forceSafeReset: boolean;
+  scopePath: string | null;
+}
+
+type ScopeModeListener = (change: ScopeModeChange) => void | Promise<void>;
+
 export default class HtmlStudioPlugin extends Plugin {
-  settings: HtmlStudioSettings = { ...DEFAULT_SETTINGS, safeScopes: [], trustedScopes: [] };
+  settings: HtmlStudioSettings = { ...DEFAULT_SETTINGS, interactiveScopes: [], safeScopes: [], trustedScopes: [] };
   previewServer!: PreviewServer;
   vaultBasePath = "";
   private readonly diagnosticSinks = new Map<string, (diagnostic: PreviewDiagnostic) => void>();
   private readonly embedSessionLimiter = new EmbedSessionLimiter(8);
   private readonly autoReloadListeners = new Set<() => void>();
+  private readonly scopeModeListeners = new Set<ScopeModeListener>();
   private readonly pathChangeLog = new BoundedPathChangeLog();
   private nextReloadRegistrationId = 0;
+  private readonly resourceSinks = new Map<string, (relativePath: string) => void>();
   private readonly sessionReloadRegistrations = new Map<string, string>();
   private readonly reloadRegistry = new PreviewReloadRegistry(160, 2_000, (id, error) => {
     console.error(`${LOG_PREFIX} Auto reload failed for ${id}`, error);
@@ -50,13 +63,14 @@ export default class HtmlStudioPlugin extends Plugin {
       return;
     }
 
-    this.vaultBasePath = adapter.getBasePath();
+    this.vaultBasePath = await canonicalizeVaultBasePath(adapter.getBasePath());
     this.previewServer = new PreviewServer(this.vaultBasePath, {
       onDiagnostic: diagnostic => this.diagnosticSinks.get(diagnostic.sessionId ?? "")?.(diagnostic),
       onResourceAccess: access => {
-        const relativePath = path.relative(this.vaultBasePath, access.resolvedPath).split(path.sep).join("/");
+        const relativePath = toVaultRelativePath(this.vaultBasePath, access.resolvedPath);
+        if (relativePath !== null) this.resourceSinks.get(access.sessionId)?.(relativePath);
         const registrationId = this.sessionReloadRegistrations.get(access.sessionId);
-        if (registrationId && !relativePath.startsWith("..")) {
+        if (registrationId && relativePath !== null) {
           this.reloadRegistry.addDependency(registrationId, relativePath);
         }
       },
@@ -65,6 +79,7 @@ export default class HtmlStudioPlugin extends Plugin {
 
     this.registerView(HTML_PREVIEW_VIEW_TYPE, leaf => new HtmlPreviewView(leaf, this));
     this.registerExtensions(["html", "htm"], HTML_PREVIEW_VIEW_TYPE);
+    this.addSettingTab(new HtmlStudioSettingTab(this.app, this));
     try {
       if (!registerHtmlEmbedExtensions(this, this.embedSessionLimiter)) {
         console.warn(`${LOG_PREFIX} This Obsidian version does not expose the HTML embed registry.`);
@@ -76,6 +91,8 @@ export default class HtmlStudioPlugin extends Plugin {
     this.register(() => {
       this.diagnosticSinks.clear();
       this.autoReloadListeners.clear();
+      this.scopeModeListeners.clear();
+      this.resourceSinks.clear();
       this.sessionReloadRegistrations.clear();
       this.reloadRegistry.clear();
       void this.previewServer.stop().catch(error => {
@@ -117,6 +134,11 @@ export default class HtmlStudioPlugin extends Plugin {
   registerDiagnosticSink(sessionId: string, sink: (diagnostic: PreviewDiagnostic) => void): () => void {
     this.diagnosticSinks.set(sessionId, sink);
     return () => this.diagnosticSinks.delete(sessionId);
+  }
+
+  registerResourceSink(sessionId: string, sink: (relativePath: string) => void): () => void {
+    this.resourceSinks.set(sessionId, sink);
+    return () => this.resourceSinks.delete(sessionId);
   }
 
   registerPreviewDependencies(
@@ -162,27 +184,61 @@ export default class HtmlStudioPlugin extends Plugin {
     return () => this.autoReloadListeners.delete(listener);
   }
 
-  isScopeTrusted(scopePath: string): boolean {
-    return isScopeTrusted(scopePath, this.settings.trustedScopes, this.settings.safeScopes);
+  registerScopeModeListener(listener: ScopeModeListener): () => void {
+    this.scopeModeListeners.add(listener);
+    return () => this.scopeModeListeners.delete(listener);
   }
 
-  async trustScope(scopePath: string): Promise<void> {
+  getScopeMode(scopePath: string): PreviewMode {
+    return resolveScopeMode(
+      scopePath,
+      this.settings.trustedScopes,
+      this.settings.safeScopes,
+      this.settings.interactiveScopes
+    );
+  }
+
+  async rememberScopeMode(scopePath: string, mode: PreviewMode): Promise<void> {
+    const normalizedScopePath = normalizeScopePath(scopePath);
+    await this.settingsUpdater.update(current => {
+      let interactiveScopes = removeInteractiveScope(normalizedScopePath, current.interactiveScopes);
+      let safeScopes = removeSafeScope(normalizedScopePath, current.safeScopes);
+      let trustedScopes = removeTrustedScope(normalizedScopePath, current.trustedScopes);
+
+      if (mode === "safe") safeScopes = addSafeScope(normalizedScopePath, safeScopes);
+      if (mode === "interactive") interactiveScopes = addInteractiveScope(normalizedScopePath, interactiveScopes);
+      if (mode === "trusted") trustedScopes = addTrustedScope(normalizedScopePath, trustedScopes);
+
+      return { ...current, interactiveScopes, safeScopes, trustedScopes };
+    });
+    await this.notifyScopeModeChange({ forceSafeReset: false, scopePath: normalizedScopePath });
+  }
+
+  async removeScopeMode(scopePath: string, mode: PreviewMode): Promise<void> {
+    const normalizedScopePath = normalizeScopePath(scopePath);
     await this.settingsUpdater.update(current => ({
       ...current,
-      safeScopes: removeSafeScope(scopePath, current.safeScopes),
-      trustedScopes: addTrustedScope(scopePath, current.trustedScopes, current.safeScopes)
+      interactiveScopes: mode === "interactive"
+        ? removeInteractiveScope(normalizedScopePath, current.interactiveScopes)
+        : current.interactiveScopes,
+      safeScopes: mode === "safe"
+        ? removeSafeScope(normalizedScopePath, current.safeScopes)
+        : current.safeScopes,
+      trustedScopes: mode === "trusted"
+        ? removeTrustedScope(normalizedScopePath, current.trustedScopes)
+        : current.trustedScopes
     }));
+    await this.notifyScopeModeChange({ forceSafeReset: false, scopePath: normalizedScopePath });
   }
 
-  async untrustScope(scopePath: string): Promise<void> {
-    await this.settingsUpdater.update(current => {
-      const trustedScopes = removeTrustedScope(scopePath, current.trustedScopes);
-      return {
-        ...current,
-        safeScopes: addSafeScope(scopePath, current.safeScopes, trustedScopes),
-        trustedScopes
-      };
-    });
+  async resetScopeModes(): Promise<void> {
+    await this.settingsUpdater.update(current => ({
+      ...current,
+      interactiveScopes: [],
+      safeScopes: [],
+      trustedScopes: []
+    }));
+    await this.notifyScopeModeChange({ forceSafeReset: true, scopePath: null });
   }
 
   async setAutoReload(enabled: boolean): Promise<void> {
@@ -203,6 +259,12 @@ export default class HtmlStudioPlugin extends Plugin {
     const stored = (await this.loadData()) as Partial<HtmlStudioSettings> | null;
     this.settings = {
       autoReload: stored?.autoReload ?? DEFAULT_SETTINGS.autoReload,
+      interactiveScopes: Array.isArray(stored?.interactiveScopes)
+        ? stored.interactiveScopes
+          .filter((scope): scope is string => typeof scope === "string")
+          .map(normalizeScopePath)
+          .filter(Boolean)
+        : [],
       safeScopes: Array.isArray(stored?.safeScopes)
         ? stored.safeScopes
           .filter((scope): scope is string => typeof scope === "string")
@@ -221,6 +283,17 @@ export default class HtmlStudioPlugin extends Plugin {
   private notifyFileChanged(filePath: string): void {
     this.pathChangeLog.record(filePath);
     if (this.settings.autoReload) this.reloadRegistry.notifyPathChanged(filePath);
+  }
+
+  private async notifyScopeModeChange(change: ScopeModeChange): Promise<void> {
+    const results = await Promise.allSettled(
+      [...this.scopeModeListeners].map(listener => Promise.resolve().then(() => listener(change)))
+    );
+    results.forEach(result => {
+      if (result.status === "rejected") {
+        console.error(`${LOG_PREFIX} Permission change propagation failed`, result.reason);
+      }
+    });
   }
 
   private removeReloadSessionMappings(registrationId: string): void {
