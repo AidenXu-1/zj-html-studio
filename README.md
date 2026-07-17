@@ -160,7 +160,7 @@ npm run check
 - `tests/`：安全边界、跨平台路径、并发和生命周期的回归保护。
 - `manifest.json`、`versions.json`：Obsidian 安装与版本兼容所需。
 - `package-lock.json`：锁定构建依赖，保证审核和发布可以复现。
-- `.github/workflows/`：三平台检查与带来源证明的 Release 构建。
+- `.github/workflows/`：三平台检查与可复现的 Release 构建。
 - `SECURITY.md`、`CHANGELOG.md`、`CONTRIBUTING.md`：安全报告、版本变化和协作规则。
 
 这些文件直接服务于安装、审核、安全或维护。构建缓存、依赖目录、真实仓库内容和内部研发资料不进入公开仓库。
