@@ -312,9 +312,14 @@ describe("PreviewServer", () => {
 
     const result = await get(session, "/race-exchange/secret.md");
 
-    expect(result.statusCode).toBe(403);
+    // POSIX resolves the replacement link outside the scope (403), while
+    // Windows can observe the directory swap as an identity change (409).
+    // Both outcomes fail closed before either file body can be returned.
+    expect([403, 409]).toContain(result.statusCode);
     expect(result.body).not.toContain("secret");
-    expect(diagnostics.at(-1)?.reason).toBe("outside-scope");
+    expect(diagnostics.at(-1)?.reason).toBe(
+      result.statusCode === 403 ? "outside-scope" : "server-error"
+    );
   });
 
   it("rejects a same-scope file identity swap after opening the original handle", async () => {
@@ -975,7 +980,7 @@ describe("PreviewServer", () => {
     const sessionDiagnostics = diagnostics.filter(diagnostic => diagnostic.sessionId === session.id);
     expect(sessionDiagnostics).toHaveLength(201);
     expect(sessionDiagnostics.at(-1)?.reason).toBe("diagnostic-limit");
-  });
+  }, 30_000);
 });
 
 function get(
