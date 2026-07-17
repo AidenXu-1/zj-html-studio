@@ -27,7 +27,7 @@ describe("plugin kickoff", () => {
 
     expect(manifest.id).toBe("zj-html-studio");
     expect(manifest.name).toBe("ZJ HTML Studio");
-    expect(manifest.version).toBe("0.3.0");
+    expect(manifest.version).toBe("0.3.1");
     expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(manifest.minAppVersion).toBe("1.12.7");
     expect(manifest.isDesktopOnly).toBe(true);
