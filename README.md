@@ -148,7 +148,7 @@ npm run check
 
 1. Obsidian 官方 ESLint 规则
 2. TypeScript 严格类型检查
-3. 20 个测试文件、286 项自动测试
+3. 20 个测试文件、288 项自动测试
 4. 最小化生产构建
 5. Release 安装文件一致性检查
 
