@@ -1,7 +1,7 @@
 {
   "id": "zj-html-studio",
   "name": "ZJ HTML Studio",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "minAppVersion": "1.12.7",
   "description": "Preview, search, inspect, and embed local HTML files with scoped resources and live reload.",
   "author": "兆基",

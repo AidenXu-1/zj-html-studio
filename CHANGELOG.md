@@ -2,6 +2,11 @@
 
 ZJ HTML Studio 的重要变化记录在这里。
 
+## 0.3.2 · 2026-07-17
+
+- 暂停生成 GitHub artifact attestation，规避 Obsidian 自动审查器与 GitHub 当日签名链的兼容故障。
+- 发布构建为 JavaScript 与 CSS 加入版本注释，使每个版本拥有独立、可核对的安装文件摘要；插件运行行为与 0.3.0 相同。
+
 ## 0.3.1 · 2026-07-17
 
 - 修复 GitHub Release 来源证明与 Obsidian 自动审查器的兼容性；插件功能与 0.3.0 相同。

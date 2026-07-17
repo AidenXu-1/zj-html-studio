@@ -7,8 +7,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
-  attestations: write
 
 jobs:
   release:
@@ -24,17 +22,6 @@ jobs:
           npm ci
           npm run check
           npm audit --audit-level=high
-      - name: Attest release assets
-        # Keep the attestation format compatible with Obsidian's current
-        # release scanner. This exact actions/attest revision produced the
-        # verified 0.2.0 release; floating @v4 moved on 2026-07-16 and the
-        # scanner rejected the resulting main.js/styles.css attestations.
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763
-        with:
-          subject-path: |
-            dist/main.js
-            dist/manifest.json
-            dist/styles.css
       - name: Create draft release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

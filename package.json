@@ -1,6 +1,6 @@
 {
   "name": "zj-html-studio",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Preview, search, inspect, and embed local HTML files with scoped resources and live reload.",
   "main": "dist/main.js",
