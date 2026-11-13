@@ -1,5 +1,6 @@
-import { Modal, setIcon, type App } from "obsidian";
+import { Modal, type App } from "obsidian";
 import type { PreviewMode } from "../settings";
+import { renderResourceDetails, renderResourceFilename } from "./resource-access-content";
 
 interface ScopeExpansionModalOptions {
   currentScopePath: string;
@@ -29,34 +30,24 @@ export class ScopeExpansionModal extends Modal {
   }
 
   override onOpen(): void {
-    this.modalEl.addClass("html-studio-trust-modal");
-    this.setTitle("临时扩大这个页面的资源范围？");
-    const intro = this.contentEl.createDiv({ cls: "html-studio-trust-intro" });
-    const icon = intro.createDiv({ cls: "html-studio-trust-icon" });
-    setIcon(icon, "folder-key");
-    intro.createEl("p", {
-      text: "插件已经确认目标是知识仓库内当前存在的普通文件。扩大范围只对这个标签本次会话生效，不会保存为文件夹权限。"
+    this.modalEl.addClass("html-studio-access-modal", "html-studio-resource-modal");
+    this.setTitle("允许读取这个文件？");
+    const body = this.contentEl.createDiv({ cls: "html-studio-resource-body" });
+    renderResourceFilename(body, this.options.targetRelativePath);
+    body.createEl("p", { cls: "html-studio-access-intro", text: "页面正在请求课件配套资源之外的文件。" });
+    renderResourceDetails(body, [
+      { label: "文件位置", path: this.options.targetRelativePath }
+    ], []);
+    if (this.options.mode === "trusted" || this.options.mode === "standard") body.createEl("p", {
+      cls: "html-studio-resource-hint",
+      text: "此页面可以联网，允许后也能读取和使用这个文件的内容。"
     });
-
-    this.renderScope("页面刚才尝试读取", this.options.targetRelativePath);
-    this.renderScope("当前资源范围", this.options.currentScopePath || "整个知识仓库");
-    this.renderScope("扩大后的资源范围", this.options.suggestedScopePath || "整个知识仓库");
-
-    const risk = this.contentEl.createDiv({ cls: "html-studio-trust-scope" });
-    risk.createSpan({ text: "当前页面权限" });
-    risk.createEl("code", { text: modeLabel(this.options.mode) });
-    risk.createEl("small", {
-      text: this.options.mode === "trusted"
-        ? "可信兼容仍允许页面脚本、联网和剪贴板。确认前请同时确认页面来源。"
-        : this.options.mode === "interactive"
-          ? "本地交互会运行页面脚本；常见请求通道受阻，但页面导航和 WebRTC 不作离线承诺。"
-          : "安全只读继续阻止用户脚本和常见后台请求。"
-    });
-
-    const actions = this.contentEl.createDiv({ cls: "html-studio-trust-actions" });
-    const cancel = actions.createEl("button", { text: "保持当前范围" });
+    const footer = this.contentEl.createDiv({ cls: "html-studio-resource-footer" });
+    footer.createEl("p", { cls: "html-studio-resource-hint", text: "只允许这一个文件，关闭课件后失效。其他文件不会一并开放。" });
+    const actions = footer.createDiv({ cls: "html-studio-access-actions" });
+    const cancel = actions.createEl("button", { text: "暂不允许" });
     cancel.addEventListener("click", () => this.cancel());
-    const confirm = actions.createEl("button", { cls: "mod-cta", text: "仅本次扩大范围" });
+    const confirm = actions.createEl("button", { cls: "mod-cta", text: "允许读取" });
     confirm.addEventListener("click", () => {
       this.settle(true);
       this.close();
@@ -68,22 +59,10 @@ export class ScopeExpansionModal extends Modal {
     this.contentEl.empty();
   }
 
-  private renderScope(label: string, value: string): void {
-    const scope = this.contentEl.createDiv({ cls: "html-studio-trust-scope" });
-    scope.createSpan({ text: label });
-    scope.createEl("code", { text: value });
-  }
-
   private settle(approved: boolean): void {
     if (this.settled) return;
     this.settled = true;
     this.resolveDecision?.(approved);
     this.resolveDecision = null;
   }
-}
-
-function modeLabel(mode: PreviewMode): string {
-  if (mode === "trusted") return "可信兼容";
-  if (mode === "interactive") return "本地交互";
-  return "安全只读";
 }

@@ -58,6 +58,7 @@ export const SAFE_CONTENT_SECURITY_POLICY = [
 export const TRUSTED_CONTENT_SECURITY_POLICY = TRUSTED_CSP_DIRECTIVES.join("; ");
 
 export function getContentSecurityPolicy(mode: PreviewMode, origin?: string, bridgeNonce?: string): string {
+  if (mode === "standard") return `sandbox allow-scripts allow-same-origin; ${TRUSTED_CONTENT_SECURITY_POLICY}; form-action 'none'`;
   if (mode === "trusted") return TRUSTED_CONTENT_SECURITY_POLICY;
   if (mode === "interactive" && origin) {
     return [

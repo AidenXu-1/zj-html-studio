@@ -1,5 +1,5 @@
 import type { ReadStream } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import {
   createServer,
@@ -18,12 +18,15 @@ import { assertUtf8HtmlEncoding, assertValidUtf8, UnsupportedHtmlEncodingError }
 import { decodeRequestPath, encodeRelativeUrlPath, isPathInside, PathRequestError, toVaultRelativePath } from "./path-safety";
 import { parseByteRange } from "./range";
 import {
-  injectSearchBridge,
-  injectSearchBridgeBuffer,
-  MAX_SEARCH_BRIDGE_HTML_BYTES
+  findHtmlHeadInsertionOffset,
+  createPageBridgeScript
 } from "./search-bridge";
+import { getFixedCanvasStyle } from "./fixed-canvas";
 import { SearchTransformLimiter } from "./search-transform-limiter";
 import { HtmlSnapshotLimiter } from "./html-snapshot-limiter";
+import { MAX_HTML_PREVIEW_BYTES } from "./preview-limits";
+import { isShareableFile, ResourceAccessPolicy } from "./resource-access-policy";
+export { MAX_HTML_PREVIEW_BYTES } from "./preview-limits";
 import {
   openVerifiedFile,
   type VerifiedFile,
@@ -35,7 +38,6 @@ const HEADERS_TIMEOUT_MS = 10_000;
 const KEEP_ALIVE_TIMEOUT_MS = 3_000;
 const MAX_DIAGNOSTICS_PER_SESSION = 200;
 const MAX_HEADERS_COUNT = 100;
-export const MAX_HTML_PREVIEW_BYTES = 32 * 1024 * 1024;
 const MAX_REQUESTS_PER_SOCKET = 100;
 const MAX_RUNTIME_RESOURCES_PER_SESSION = 2_000;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -114,6 +116,7 @@ export type PreviewFailureReason =
   | "invalid-method"
   | "invalid-path"
   | "missing-file"
+  | "file-not-authorized"
   | "outside-scope"
   | "server-error";
 
@@ -126,6 +129,7 @@ export interface PreviewDiagnostic {
 }
 
 export interface PreviewServerOptions {
+  protectedDirectories?: readonly string[];
   afterHtmlSnapshotReady?: (resolvedPath: string) => Promise<void> | void;
   fileVerificationHooks?: VerifiedFileHooks;
   limits?: Partial<PreviewServerLimits>;
@@ -142,13 +146,18 @@ export interface PreviewResourceAccess {
 }
 
 export interface CreatePreviewSessionOptions {
+  resourceFiles?: readonly string[];
+  approvedFiles?: readonly string[];
   enableSearchBridge?: boolean;
+  expectedDocumentRevision?: string;
   entryRelativePath: string;
   mode?: PreviewMode;
   scopeRelativePath: string;
 }
 
 export interface PreviewSession {
+  resourceFiles?: readonly string[];
+  approvedFiles?: readonly string[];
   entryUrl: string;
   id: string;
   mode: PreviewMode;
@@ -177,6 +186,7 @@ export interface PreviewScopeExpansionSuggestion {
 }
 
 interface InternalSession extends PreviewSession {
+  resourceAccess: ResourceAccessPolicy;
   activeFileVerifications: Set<AbortController>;
   activeHtmlValidations: Set<AbortController>;
   activeResponses: Set<ServerResponse>;
@@ -184,6 +194,7 @@ interface InternalSession extends PreviewSession {
   activeStreams: Set<ReadStream>;
   bridgeNonce?: string;
   entryAbsolutePath: string;
+  expectedDocumentRevision?: string;
   pendingDocumentLoad?: InternalDocumentLoadTicket;
   reportedDiagnostics: Set<string>;
   reportedResources: Set<string>;
@@ -270,6 +281,9 @@ export class PreviewServer {
 
   async createSession(options: CreatePreviewSessionOptions): Promise<PreviewSession> {
     if (this.disposed) throw new Error("预览服务已经永久停止，不能再创建会话");
+    if (options.expectedDocumentRevision !== undefined && !/^[a-f0-9]{64}$/.test(options.expectedDocumentRevision)) {
+      throw new Error("课件版本信息无效，请刷新后重新投屏");
+    }
     const generation = this.lifecycleGeneration;
     this.reservePendingCreation();
     let created = false;
@@ -307,10 +321,13 @@ export class PreviewServer {
       const relativeEntry = path.relative(scopeAbsolutePath, entryAbsolutePath);
       const searchBridgeEnabled = Boolean(
         options.enableSearchBridge
-        && entryStats.size <= MAX_SEARCH_BRIDGE_HTML_BYTES
+        && entryStats.size <= MAX_HTML_PREVIEW_BYTES
       );
       const origin = `http://${token}.localhost:${this.port}`;
       const session: InternalSession = {
+        resourceFiles: [...(options.resourceFiles ?? [])],
+        approvedFiles: [...(options.approvedFiles ?? [])],
+        resourceAccess: new ResourceAccessPolicy(vaultRoot, entryAbsolutePath, options.resourceFiles, options.approvedFiles, this.options.protectedDirectories),
         id: randomBytes(12).toString("hex"),
         token,
         mode: options.mode ?? "safe",
@@ -321,6 +338,7 @@ export class PreviewServer {
         scopeAbsolutePath,
         bridgeNonce: searchBridgeEnabled ? randomBytes(18).toString("hex") : undefined,
         entryAbsolutePath,
+        expectedDocumentRevision: options.expectedDocumentRevision,
         activeFileVerifications: new Set(),
         activeHtmlValidations: new Set(),
         activeResponses: new Set(),
@@ -472,7 +490,7 @@ export class PreviewServer {
     const session = this.sessions.get(token);
     if (!session || !this.isSessionActive(session)) return null;
     const vaultRoot = await this.getVaultRootRealPath();
-    if (!isPathInside(vaultRoot, resolvedPath) || isPathInside(session.scopeAbsolutePath, resolvedPath)) {
+    if (!isShareableFile(vaultRoot, resolvedPath, this.options.protectedDirectories)) {
       return null;
     }
     const verification = this.acquireFileVerification(session);
@@ -485,7 +503,9 @@ export class PreviewServer {
         signal: verification.controller.signal
       });
       if (!this.isSessionActive(session)) return null;
-      if (isPathInside(session.scopeAbsolutePath, verifiedFile.resolvedPath)) return null;
+      if (!await session.resourceAccess.isShareable(resolvedPath, verifiedFile.resolvedPath)
+        || await session.resourceAccess.allows(resolvedPath, verifiedFile.resolvedPath)
+        || !this.isSessionActive(session)) return null;
       const expandedScope = findCommonDirectory(session.scopeAbsolutePath, verifiedFile.resolvedPath);
       if (!isPathInside(vaultRoot, expandedScope)) return null;
       return {
@@ -765,8 +785,6 @@ export class PreviewServer {
         response.destroy();
         return;
       }
-      releaseVerification();
-
       let fileHandle: typeof verifiedFile.fileHandle | undefined = verifiedFile.fileHandle;
       const { fileStats, resolvedPath } = verifiedFile;
       let htmlBuffer: Buffer | undefined;
@@ -783,6 +801,13 @@ export class PreviewServer {
         response.once("close", validation.release);
       };
       try {
+        const allowed = await session.resourceAccess.allows(candidate, resolvedPath);
+        if (response.destroyed || response.writableEnded || !this.isSessionActive(session)) return;
+        releaseVerification();
+        if (!allowed) {
+          this.respondWithError(response, 403, "这个文件需要单独允许读取", "file-not-authorized", rawPath, session, resolvedPath);
+          return;
+        }
         this.reportResourceAccess(session, rawPath, resolvedPath);
 
         const extension = path.extname(resolvedPath).toLowerCase();
@@ -848,6 +873,12 @@ export class PreviewServer {
             await this.options.afterHtmlSnapshotReady?.(resolvedPath);
             assertUtf8HtmlEncoding(snapshot);
             assertValidUtf8(snapshot);
+            // Compare the exact verified bytes, not timestamps or a second disk read.
+            if (resolvedPath === session.entryAbsolutePath && session.expectedDocumentRevision
+              && createHash("sha256").update(snapshot).digest("hex") !== session.expectedDocumentRevision) {
+              this.respondWithError(response, 412, "课件文件已修改，请先刷新本机课件再投屏。", "server-error", rawPath, session, resolvedPath);
+              return;
+            }
             htmlBuffer = snapshot;
           } catch (error) {
             if (acquiredValidation.controller.signal.aborted || response.destroyed || !this.isSessionActive(session)) {
@@ -883,32 +914,15 @@ export class PreviewServer {
           return;
         }
 
+        const canvasStyle = htmlBuffer && range === null && session.mode !== "safe"
+          ? getFixedCanvasStyle(htmlBuffer) : null;
+        const canvasStyleBytes = canvasStyle?.byteLength ?? 0;
         const bridgeNonce = this.getBridgeNonce(session, resolvedPath, fileStats.size, range === null);
         const pendingTicket = session.pendingDocumentLoad;
         if (pendingTicket?.response === response) {
           pendingTicket.searchBridgeAvailable = Boolean(bridgeNonce && session.searchChannel);
         }
         if (bridgeNonce && session.searchChannel) {
-          if (request.method === "HEAD") {
-            const injectedSuffixBytes = Buffer.byteLength(
-              injectSearchBridge(
-                "",
-                bridgeNonce,
-                session.searchChannel,
-                session.mode !== "safe"
-              ),
-              "utf8"
-            );
-            response.writeHead(200, {
-              ...this.securityHeaders(session.mode, session.origin, bridgeNonce),
-              "Accept-Ranges": "none",
-              "Content-Length": fileStats.size + injectedSuffixBytes,
-              "Content-Type": "text/html; charset=utf-8"
-            });
-            retainHtmlSnapshotUntilSent();
-            response.end();
-            return;
-          }
           const searchTransform = this.acquireSearchTransform(session);
           if (!searchTransform) {
             this.respondWithError(
@@ -930,7 +944,7 @@ export class PreviewServer {
                 response.destroy();
                 return;
               }
-              const body = injectSearchBridgeBuffer(
+              const script = createPageBridgeScript(
                 htmlBuffer,
                 bridgeNonce,
                 session.searchChannel,
@@ -939,11 +953,12 @@ export class PreviewServer {
               response.writeHead(200, {
                 ...this.securityHeaders(session.mode, session.origin, bridgeNonce),
                 "Accept-Ranges": "none",
-                "Content-Length": body.byteLength,
+                "Content-Length": htmlBuffer.byteLength + script.byteLength + canvasStyleBytes,
                 "Content-Type": "text/html; charset=utf-8"
               });
               retainHtmlSnapshotUntilSent();
-              response.end(body);
+              if (request.method === "HEAD") response.end();
+              else endHtmlResponse(response, htmlBuffer, canvasStyle, script);
               return;
           } catch (error) {
             if (searchTransform.controller.signal.aborted || response.destroyed || !this.isSessionActive(session)) {
@@ -957,10 +972,10 @@ export class PreviewServer {
           }
         }
 
-        const contentLength = range ? range.end - range.start + 1 : fileStats.size;
+        const contentLength = range ? range.end - range.start + 1 : fileStats.size + canvasStyleBytes;
         const headers: Record<string, string | number> = {
           ...this.securityHeaders(session.mode, session.origin),
-          "Accept-Ranges": "bytes",
+          "Accept-Ranges": canvasStyle ? "none" : "bytes",
           "Content-Length": contentLength,
           "Content-Type": getMimeType(path.extname(resolvedPath))
         };
@@ -970,7 +985,7 @@ export class PreviewServer {
           response.writeHead(range ? 206 : 200, headers);
           retainHtmlSnapshotUntilSent();
           if (request.method === "HEAD") response.end();
-          else response.end(range ? htmlBuffer.subarray(range.start, range.end + 1) : htmlBuffer);
+          else endHtmlResponse(response, range ? htmlBuffer.subarray(range.start, range.end + 1) : htmlBuffer, canvasStyle);
           return;
         }
 
@@ -1286,7 +1301,8 @@ export class PreviewServer {
   ): string | undefined {
     if (!isFullResponse || !session.bridgeNonce || !session.searchChannel) return undefined;
     const extension = path.extname(resolvedPath).toLowerCase();
-    if ((extension !== ".html" && extension !== ".htm") || fileSize > MAX_SEARCH_BRIDGE_HTML_BYTES) {
+    if ((extension !== ".html" && extension !== ".htm")
+      || fileSize > MAX_HTML_PREVIEW_BYTES) {
       return undefined;
     }
     return session.bridgeNonce;
@@ -1305,6 +1321,8 @@ export class PreviewServer {
 
   private toPublicSession(session: InternalSession): PreviewSession {
     return {
+      resourceFiles: [...(session.resourceFiles ?? [])],
+      approvedFiles: [...(session.approvedFiles ?? [])],
       entryUrl: session.entryUrl,
       id: session.id,
       mode: session.mode,
@@ -1372,6 +1390,16 @@ async function readExactFileHandle(
     && latestStats.ctimeNs === initialStats.ctimeNs
     ? buffer
     : null;
+}
+
+function endHtmlResponse(response: ServerResponse, body: Buffer, canvasStyle: Buffer | null, bridgeScript?: Buffer): void {
+  if (!canvasStyle && !bridgeScript) { response.end(body); return; }
+  const offset = findHtmlHeadInsertionOffset(body);
+  // Retain slices of the verified snapshot, never concatenate a second large HTML.
+  response.write(body.subarray(0, offset));
+  if (canvasStyle) response.write(canvasStyle);
+  if (bridgeScript) response.write(bridgeScript);
+  response.end(body.subarray(offset));
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

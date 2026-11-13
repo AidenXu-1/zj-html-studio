@@ -1,0 +1,32 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+html,body{margin:0;height:100%;overflow:hidden;background:white;color:#16171b}
+#viewport{height:100%;display:grid;place-items:center}#frame{width:min(100vw,177.77778vh);height:min(100vh,56.25vw)}
+#stage{position:relative;width:100%;height:100%}.slide{position:absolute;inset:0;padding:6%;box-sizing:border-box;display:none}
+.slide.active{display:block}h1{font:48px system-ui}p{font:24px system-ui}nav{position:fixed;bottom:12px;right:12px}
+</style></head><body><main id="viewport"><div id="frame"><div id="stage"></div></div></main>
+<nav><button id="prev">上一页</button><span id="page-number"></span><button id="next">下一页</button></nav>
+<script>
+(()=>{
+ const stage=document.getElementById('stage');
+ for(let i=1;i<=26;i++){
+  const slide=document.createElement('section');slide.id='slide-'+String(i).padStart(2,'0');slide.className='slide';slide.dataset.slide=String(i);
+  const title=document.createElement('h1');title.textContent='Slide '+i;slide.append(title);
+  const text=document.createElement('p');text.textContent=i===15||i===16?'Shared keyword':'Page content';slide.append(text);stage.append(slide);
+ }
+ const slides=Array.from(stage.children);let current=1;
+ const hashPage=()=>Number(location.hash.match(/^#slide-(\d+)$/)?.[1])||1;
+ function show(n,writeHash=true){
+  current=Math.max(1,Math.min(26,n));
+  slides.forEach((s,i)=>{const active=i+1===current;s.classList.toggle('active',active);s.setAttribute('aria-hidden',String(!active));s.inert=!active;});
+  document.getElementById('page-number').textContent=String(current).padStart(2,'0')+' / 26';
+  document.getElementById('prev').disabled=current===1;document.getElementById('next').disabled=current===26;
+  if(writeHash)history.replaceState(null,'','#slide-'+String(current).padStart(2,'0'));
+ }
+ document.getElementById('prev').onclick=()=>show(current-1);document.getElementById('next').onclick=()=>show(current+1);
+ document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight'||e.key==='PageDown'){e.preventDefault();show(current+1);}
+  else if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();show(current-1);}
+ });
+ addEventListener('hashchange',()=>show(hashPage(),false));show(hashPage());
+})();
+</script></body></html>

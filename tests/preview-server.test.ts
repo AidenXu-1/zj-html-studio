@@ -1,4 +1,5 @@
 import { request } from "node:http";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createConnection } from "node:net";
 import { mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
@@ -16,6 +17,7 @@ import {
 } from "../src/server/preview-server";
 import { MAX_SEARCH_BRIDGE_HTML_BYTES } from "../src/server/search-bridge";
 import { canonicalizeVaultBasePath, toVaultRelativePath } from "../src/scope/vault-path";
+import { FIXED_CANVAS_HTML } from "./fixtures/fixed-canvas";
 
 interface HttpResult {
   body: string;
@@ -45,6 +47,8 @@ describe("PreviewServer", () => {
       onDiagnostic: diagnostic => diagnostics.push(diagnostic)
     });
     session = await server.createSession({
+      resourceFiles: ["site/images/hero.svg", "site/video.mp4"],
+      approvedFiles: ["site/large.bin"],
       scopeRelativePath: "site",
       entryRelativePath: path.join("site", "course", "课程 演示.html")
     });
@@ -97,6 +101,27 @@ describe("PreviewServer", () => {
     const revoked = await get(second, "/course/%E8%AF%BE%E7%A8%8B%20%E6%BC%94%E7%A4%BA.html");
     expect(revoked.statusCode).toBe(403);
     expect(server.activeSessionCount).toBe(1);
+  });
+
+  it("refuses a changed projection document before returning its contents", async () => {
+    const original = "<h1>课程</h1>";
+    const revision = createHash("sha256").update(original).digest("hex");
+    const output = await server.createSession({
+      ...defaultSessionOptions(),
+      expectedDocumentRevision: revision,
+      enableSearchBridge: true
+    });
+    const pathname = new URL(output.entryUrl).pathname;
+    const matching = await get(output, pathname);
+    expect(matching.statusCode).toBe(200);
+    expect(matching.body).toContain(revision);
+
+    await writeFile(path.join(tempRoot, "site", "course", "课程 演示.html"), "<h1>改版</h1>");
+    const ticket = server.beginSessionDocumentLoad(output.token, output.entryUrl);
+    const changed = await get(output, pathname);
+    expect(changed.statusCode).toBe(412);
+    expect(changed.body).not.toContain("改版");
+    await expect(ticket.completion).resolves.toEqual({ ok: false, statusCode: 412 });
   });
 
   it("uses a random localhost origin while listening only on IPv4 loopback", () => {
@@ -406,8 +431,34 @@ describe("PreviewServer", () => {
     expect(csp).toContain("connect-src 'none'");
     expect(csp).not.toContain("'unsafe-eval'");
     expect(page.headers["permissions-policy"]).toContain("clipboard-write=()");
-    expect(page.body).toContain(`)("${interactive.searchChannel}",false,true)`);
+    expect(page.body).toContain(`)("${interactive.searchChannel}",false,true,`);
     expect(page.body).toContain("runManualSearch");
+  });
+
+  for (const large of [false, true]) it(`protects a fixed canvas without changing response/security contracts (${large ? "large" : "small"})`, async () => {
+    const source = FIXED_CANVAS_HTML + (large ? `<!--${"x".repeat(5 * 1024 * 1024)}-->` : "");
+    await writeFile(path.join(tempRoot, "site", "course", "课程 演示.html"), source);
+    const interactive = await server.createSession({ ...defaultSessionOptions(), mode: "interactive", enableSearchBridge: true,
+      expectedDocumentRevision: createHash("sha256").update(source).digest("hex") });
+    const url = new URL(interactive.entryUrl).pathname;
+    const full = await get(interactive, url), head = await get(interactive, url, "HEAD");
+    expect(full.statusCode).toBe(200); expect(full.body.startsWith("<!doctype html>")).toBe(true);
+    expect(full.body).toContain("data-html-studio-canvas");
+    expect(Number(full.headers["content-length"])).toBe(Buffer.byteLength(full.body));
+    expect(head.headers["content-length"]).toBe(full.headers["content-length"]); expect(head.body).toBe("");
+    expect(full.headers["content-security-policy"]).toContain("connect-src 'none'");
+    expect(full.headers["permissions-policy"]).toContain("clipboard-write=()");
+    expect(full.body).toContain("html-studio-search-ready");
+    expect(full.body).toContain(createHash("sha256").update(source).digest("hex"));
+    const range = await get(interactive, url, "GET", { Range: "bytes=0-31" });
+    expect(range.statusCode).toBe(206); expect(range.body).toBe(source.slice(0, 32));
+    expect((await get(session, url)).body).toBe(source);
+  });
+
+  it("leaves ordinary interactive HTML unmodified when no canvas pattern is present", async () => {
+    const interactive = await server.createSession({ ...defaultSessionOptions(), mode: "interactive" });
+    const page = await get(interactive, new URL(interactive.entryUrl).pathname);
+    expect(page.body).toBe("<h1>课程</h1>");
   });
 
   it("injects a nonce-only search bridge into opted-in local HTML pages", async () => {
@@ -429,7 +480,7 @@ describe("PreviewServer", () => {
 
     expect(searchable.searchChannel).toMatch(/^[a-f0-9]{48}$/);
     expect(page.body).toContain("html-studio-search-ready");
-    expect(page.body).toContain(`)("${searchable.searchChannel}",false,false)`);
+    expect(page.body).toContain(`)("${searchable.searchChannel}",false,false,`);
     expect(page.body).toMatch(/<script nonce="[a-f0-9]{36}">/);
     expect(page.body).toContain("<script>window.userScriptRan=true</script>");
     expect(head.body).toBe("");
@@ -443,7 +494,7 @@ describe("PreviewServer", () => {
     expect(server.resourceUsage.activeSearchTransforms).toBe(0);
   });
 
-  it("keeps oversized HTML previewable without allocating a search transform", async () => {
+  it("rejects HTML above the common file limit before allocating a search transform", async () => {
     const oversizedPath = path.join(tempRoot, "site", "course", "oversized.html");
     await writeFile(oversizedPath, Buffer.alloc(MAX_SEARCH_BRIDGE_HTML_BYTES + 1, 97));
     const oversized = await server.createSession({
@@ -454,9 +505,32 @@ describe("PreviewServer", () => {
 
     const page = await get(oversized, "/course/oversized.html");
     expect(oversized.searchChannel).toBeUndefined();
-    expect(page.statusCode).toBe(200);
+    expect(page.statusCode).toBe(413);
     expect(page.body).not.toContain("html-studio-search-ready");
     expect(server.resourceUsage.activeSearchTransforms).toBe(0);
+  });
+
+  it("gives a large media course search and page control with unchanged isolation and snapshot concurrency", async () => {
+    const source = `<!doctype html><html><body><img src="data:image/png;base64,${"A".repeat(13 * 1024 * 1024)}"></body></html>`;
+    const revision = createHash("sha256").update(source).digest("hex");
+    await writeFile(path.join(tempRoot, "site", "course", "large-course.html"), source);
+    const course = await server.createSession({ enableSearchBridge: true, mode: "interactive",
+      entryRelativePath: "site/course/large-course.html", scopeRelativePath: "site", expectedDocumentRevision: revision });
+    const ticket = server.beginSessionDocumentLoad(course.token, course.entryUrl);
+    const full = await get(course, "/course/large-course.html");
+    expect(course.searchChannel).toBeTruthy();
+    expect(full.statusCode).toBe(200);
+    await expect(ticket.completion).resolves.toMatchObject({ ok: true, searchBridgeAvailable: true });
+    expect(full.body).toContain(revision);
+    expect(full.body).toContain("html-studio-deck-go");
+    expect(full.body).toContain(`,${JSON.stringify(revision)},true,(`);
+    expect(full.headers["content-security-policy"]).toContain("connect-src 'none'");
+    expect(full.headers["permissions-policy"]).toContain("clipboard-write=()");
+    expect(Number(full.headers["content-length"])).toBe(Buffer.byteLength(full.body));
+    expect((await get(course, "/course/large-course.html", "HEAD")).headers["content-length"]).toBe(full.headers["content-length"]);
+    expect((await get(course, "/course/large-course.html", "GET", { Range: "bytes=0-31" })).body).toBe(source.slice(0, 32));
+    await writeFile(path.join(tempRoot, "site", "course", "large-course.html"), source.replace("<body>", "<body >"));
+    expect((await get(course, "/course/large-course.html")).statusCode).toBe(412);
   });
 
   it("rejects a declared legacy HTML encoding instead of serving mojibake", async () => {
@@ -499,9 +573,9 @@ describe("PreviewServer", () => {
     });
   });
 
-  it("rejects invalid UTF-8 at the tail of oversized non-bridge HTML", async () => {
+  it("rejects invalid UTF-8 at the tail of large searchable HTML", async () => {
     const invalidBody = Buffer.concat([
-      Buffer.alloc(MAX_SEARCH_BRIDGE_HTML_BYTES + 256, 0x61),
+      Buffer.alloc(13 * 1024 * 1024 + 256, 0x61),
       Buffer.from([0x80])
     ]);
     await writeFile(path.join(tempRoot, "site", "course", "oversized-invalid.html"), invalidBody);
@@ -511,7 +585,7 @@ describe("PreviewServer", () => {
       scopeRelativePath: "site"
     });
 
-    expect(invalid.searchChannel).toBeUndefined();
+    expect(invalid.searchChannel).toBeTruthy();
     expect((await get(invalid, "/course/oversized-invalid.html", "HEAD")).statusCode).toBe(415);
     expect((await get(invalid, "/course/oversized-invalid.html")).statusCode).toBe(415);
   });
@@ -1063,8 +1137,12 @@ function getUntilRevoked(
 function defaultSessionOptions(): {
   entryRelativePath: string;
   scopeRelativePath: string;
+  resourceFiles: string[];
+  approvedFiles: string[];
 } {
   return {
+    resourceFiles: ["site/images/hero.svg", "site/video.mp4"],
+    approvedFiles: ["site/large.bin"],
     scopeRelativePath: "site",
     entryRelativePath: path.join("site", "course", "课程 演示.html")
   };

@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+#viewport{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#eee}
+#stage{position:relative;width:1280px;height:720px;transform-origin:center;background:#111;color:white;overflow:hidden}
+.slide{position:absolute;inset:0;display:none}.slide.active{display:block}
+.title{position:absolute;left:100px;top:150px;width:900px;font:64px sans-serif}
+.circle{position:absolute;right:100px;bottom:100px;width:100px;height:100px;border-radius:50%;background:#a594ed}
+nav{position:absolute;bottom:20px;left:40px;right:40px;display:flex;justify-content:space-between}
+</style></head><body><div id="viewport"><div id="stage">
+<section class="slide active"><h1 class="title">Keep the whole canvas</h1><div class="circle"></div></section>
+<section class="slide"><h1 class="title">Same layout, another page</h1><div class="circle"></div></section>
+<nav><span id="page">1 / 2</span><button id="next">Next</button></nav>
+</div></div><script>
+function fit(){stage.style.transform='scale('+Math.min(innerWidth/1280,innerHeight/720,1)+')'}
+addEventListener('resize',fit);fit();
+document.querySelector('#next').onclick=()=>{document.querySelectorAll('.slide').forEach(e=>e.classList.toggle('active'));document.querySelector('#page').textContent='2 / 2'};
+</script></body></html>

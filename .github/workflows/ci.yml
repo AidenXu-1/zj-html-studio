@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -25,4 +25,17 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - if: runner.os == 'Linux'
+        run: npx playwright-core install --with-deps chromium
+      - name: Prepare pinned framework test fixtures
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p .tmp/frameworks/reveal .tmp/frameworks/swiper
+          npm pack reveal.js@5.2.1 swiper@11.2.10 --pack-destination .tmp/frameworks
+          tar -xzf .tmp/frameworks/reveal.js-5.2.1.tgz --strip-components=1 -C .tmp/frameworks/reveal
+          tar -xzf .tmp/frameworks/swiper-11.2.10.tgz --strip-components=1 -C .tmp/frameworks/swiper
+      - if: runner.os == 'Linux'
+        env:
+          HTML_STUDIO_FRAMEWORK_ASSETS: .tmp/frameworks
+        run: npm run test:browser
       - run: npm audit --audit-level=high

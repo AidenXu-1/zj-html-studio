@@ -2,7 +2,6 @@ import { Component, Notice, setIcon, type TFile } from "obsidian";
 import type HtmlStudioPlugin from "../main";
 import type { ScopeModeChange } from "../main";
 import { analyzePreviewScope, type ScopeAnalysis } from "../scope/dependency-analyzer";
-import { applyEntryFolderSafeTrial } from "../scope/resource-scope-policy";
 import { toVaultRelativePath } from "../scope/vault-path";
 import { getHtmlPermissionScopePath, type PreviewMode } from "../settings";
 import type {
@@ -22,13 +21,11 @@ import {
 import { EmbedDiagnosticsModal } from "../ui/embed-diagnostics-modal";
 import { PreviewEntryProbeError, toUserFacingPreviewError } from "../ui/error-message";
 import { isFullscreenTarget, toggleFullscreenTarget } from "../ui/fullscreen";
-import { ScopeConfirmationModal } from "../ui/scope-confirmation-modal";
 import { TrustModeModal } from "../ui/trust-mode-modal";
 import {
   applyModeChoice,
   decideScopeModeChange,
   isPreviewModeDowngrade,
-  shouldConfirmScope
 } from "../view/preview-load-policy";
 import {
   getPreviewIframeAllow,
@@ -68,8 +65,6 @@ export interface HtmlEmbedContext {
 export class HtmlEmbed extends Component {
   private acquireGeneration = 0;
   private acquiring = false;
-  private activeScopeModal: ScopeConfirmationModal | null = null;
-  private confirmedScopePath: string | null = null;
   private currentMode: PreviewMode = "safe";
   private currentAnalysis: ScopeAnalysis | null = null;
   private candidateHost: HTMLElement | null = null;
@@ -130,8 +125,6 @@ export class HtmlEmbed extends Component {
     this.clearReleaseTimer();
     this.observer?.disconnect();
     this.observer = null;
-    this.activeScopeModal?.cancel();
-    this.activeScopeModal = null;
     this.activeDiagnosticsModal?.close();
     this.activeDiagnosticsModal = null;
     this.activeModeModal?.cancel();
@@ -237,14 +230,6 @@ export class HtmlEmbed extends Component {
     try {
       const analysis = cachedAnalysis ?? await analyzePreviewScope(this.plugin.vaultBasePath, this.file.path);
       if (this.handleInterruptedLoad(generation)) return;
-      if (shouldConfirmScope(analysis.requiresConfirmation, this.confirmedScopePath, analysis.scopeRelativePath)) {
-        this.pendingAnalysis = analysis;
-        this.clearReloadRegistration();
-        this.releaseActiveSlot();
-        this.renderScopeConfirmation(analysis);
-        return;
-      }
-
       this.pendingAnalysis = null;
       const permissionScopePath = getHtmlPermissionScopePath(this.file.path);
       const mode = this.modeOverride ?? this.plugin.getScopeMode(permissionScopePath);
@@ -433,19 +418,8 @@ export class HtmlEmbed extends Component {
     const copy = notice.createDiv({ cls: "html-studio-script-notice-copy" });
     copy.createEl("strong", { text: presentation.title });
     copy.createSpan({ text: presentation.detail });
-    const button = notice.createEl("button", { cls: "mod-cta", text: "本地交互打开" });
-    button.addEventListener("click", () => {
-      const session = this.session;
-      const analysis = this.currentAnalysis;
-      if (!session || !analysis) return;
-      button.disabled = true;
-      void this.replacePreviewSessionMode("interactive", session.token, analysis).catch(error => {
-        console.error("[ZJ HTML Studio] Failed to switch embed to local interactive mode", error);
-        new Notice(toUserFacingPreviewError(error, "embed"));
-      }).finally(() => {
-        if (button.isConnected) button.disabled = false;
-      });
-    });
+    const button = notice.createEl("button", { text: "恢复正常打开" });
+    button.addEventListener("click", () => this.openModeModal("standard"));
   }
 
   private renderWaiting(message: string): void {
@@ -478,22 +452,6 @@ export class HtmlEmbed extends Component {
       this.pendingFocusAction = null;
       retry.focus();
     }
-  }
-
-  private renderScopeConfirmation(analysis: ScopeAnalysis): void {
-    const root = this.root;
-    if (!root) return;
-    root.empty();
-    const placeholder = root.createDiv({ cls: "html-studio-embed-placeholder is-confirm" });
-    const icon = placeholder.createSpan();
-    setIcon(icon, "folder-key");
-    const copy = placeholder.createDiv();
-    copy.createEl("strong", { text: "需要确认资源范围" });
-    copy.createEl("p", { text: analysis.scopeRelativePath || "这个页面需要读取整个知识仓库。" });
-    const confirm = copy.createEl("button", { cls: "mod-cta", text: "查看并确认" });
-    confirm.addEventListener("click", () => void this.confirmScope(analysis));
-    const open = copy.createEl("button", { text: "在标签页打开" });
-    open.addEventListener("click", () => this.openInTab());
   }
 
   private renderCanvasPlaceholder(): void {
@@ -539,7 +497,7 @@ export class HtmlEmbed extends Component {
     modal.open();
   }
 
-  private openModeModal(): void {
+  private openModeModal(requestMode?: "standard" | "trusted"): void {
     const analysis = this.currentAnalysis;
     const session = this.session;
     const permissionScopePath = this.permissionScopePath;
@@ -548,6 +506,7 @@ export class HtmlEmbed extends Component {
     this.activeModeModal?.cancel();
     const modal = new TrustModeModal(this.plugin.app, {
       currentMode: this.currentMode,
+      requestMode,
       permissionScopePath,
       resourceScopePath: analysis.scopeRelativePath,
       onChoose: async (mode, remember) => {
@@ -677,7 +636,8 @@ export class HtmlEmbed extends Component {
       () => this.plugin.previewServer.createSession({
         entryRelativePath: this.file.path,
         mode,
-        scopeRelativePath: analysis.scopeRelativePath
+        scopeRelativePath: analysis.scopeRelativePath,
+        resourceFiles: analysis.dependencyRelativePaths
       }),
       async session => {
         const probe = await this.probeSessionEntry(session.token);
@@ -846,27 +806,6 @@ export class HtmlEmbed extends Component {
     this.entryProbeAbortController = null;
   }
 
-  private async confirmScope(analysis: ScopeAnalysis): Promise<void> {
-    this.activeScopeModal?.cancel();
-    const modal = new ScopeConfirmationModal(this.plugin.app, analysis);
-    this.activeScopeModal = modal;
-    const decision = await modal.waitForDecision();
-    if (this.activeScopeModal === modal) this.activeScopeModal = null;
-    if (decision === "cancel" || this.unloaded || this.pendingAnalysis !== analysis) return;
-    const selectedAnalysis = decision === "entry-folder-safe"
-      ? applyEntryFolderSafeTrial(analysis)
-      : analysis;
-    if (decision === "entry-folder-safe") {
-      this.modeOverride = "safe";
-      this.confirmedScopePath = null;
-    } else {
-      this.confirmedScopePath = analysis.scopeRelativePath;
-    }
-    this.pendingAnalysis = null;
-    this.reloadPending = false;
-    this.requestSession(selectedAnalysis);
-  }
-
   private async reloadPreview(): Promise<void> {
     this.reloadPending = false;
     this.pendingFocusAction ??= this.captureFocusedAction();
@@ -892,7 +831,6 @@ export class HtmlEmbed extends Component {
     const analysisStartCheckpoint = this.plugin.getVaultChangeCheckpoint();
     const previousDependencies = this.plugin.getPreviewDependencies(this.reloadRegistrationId);
     const permissionScopePath = getHtmlPermissionScopePath(this.file.path);
-    let nextConfirmedScopePath = this.confirmedScopePath;
     let candidate: PreviewSession | null = null;
     let prepared: PreparedEmbedCandidate | null = null;
     if (this.status) {
@@ -904,39 +842,15 @@ export class HtmlEmbed extends Component {
     }
 
     try {
-      let analysis = await analyzePreviewScope(this.plugin.vaultBasePath, this.file.path);
+      const analysis = await analyzePreviewScope(this.plugin.vaultBasePath, this.file.path);
       if (this.unloaded || !this.isVisible || this.generation !== generation || this.session?.token !== previousToken) {
         return;
       }
-      if (shouldConfirmScope(
-        analysis.requiresConfirmation,
-        nextConfirmedScopePath,
-        analysis.scopeRelativePath
-      )) {
-        const modal = new ScopeConfirmationModal(this.plugin.app, analysis);
-        this.activeScopeModal = modal;
-        const decision = await modal.waitForDecision();
-        if (this.activeScopeModal === modal) this.activeScopeModal = null;
-        if (this.unloaded || this.generation !== generation || this.session?.token !== previousToken) return;
-        if (decision === "cancel") {
-          this.setCandidateReloadError("新版本需要更大的资源范围；未获得确认，继续显示上一次可用版本。");
-          return;
-        }
-        if (decision === "entry-folder-safe") {
-          analysis = applyEntryFolderSafeTrial(analysis);
-          this.modeOverride = "safe";
-          nextConfirmedScopePath = null;
-        } else {
-          nextConfirmedScopePath = analysis.scopeRelativePath;
-        }
-      }
-
       let nextMode = this.modeOverride ?? this.plugin.getScopeMode(permissionScopePath);
       let nextModeOverride = this.modeOverride;
       if (nextMode !== this.currentMode) {
         if (isPreviewModeDowngrade(this.currentMode, nextMode)) {
           this.modeOverride = nextMode;
-          this.confirmedScopePath = nextConfirmedScopePath;
           this.pendingFocusAction = focusAction;
           await this.cleanupPreview(false);
           if (!this.unloaded && this.isVisible) await this.loadPreview(analysis);
@@ -964,7 +878,6 @@ export class HtmlEmbed extends Component {
         return;
       }
 
-      this.confirmedScopePath = nextConfirmedScopePath;
       this.modeOverride = nextModeOverride;
       this.pendingFocusAction = focusAction;
       const runtimeDependencies = [...prepared.dependencies];

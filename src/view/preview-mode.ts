@@ -8,6 +8,12 @@ interface PreviewModePresentation {
 }
 
 const MODE_PRESENTATION: Record<PreviewMode, PreviewModePresentation> = {
+  standard: {
+    icon: "globe",
+    label: "正常打开",
+    shortLabel: "正常",
+    title: "按钮、翻页、动画和联网可用；本地只开放课件与配套资源，额外文件单独确认。"
+  },
   safe: {
     icon: "shield",
     label: "安全只读",

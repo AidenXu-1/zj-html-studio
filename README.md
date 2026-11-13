@@ -4,19 +4,23 @@
 
 <p align="center">课程页面 · 分享会 · 公众号排版 · 交互演示</p>
 
+> 0.4.21：直接预览 HTML、右栏逐页讲义、独立窗口投屏，以及跨页搜索和整体缩放。
+
 ## English overview
 
-ZJ HTML Studio lets Obsidian Desktop open local `.html` and `.htm` files in native tabs. It supports scoped local resources, safe read-only, local interactive and trusted compatibility modes, live reload, read-only source view, page zoom, in-page search, fullscreen, and Markdown embeds.
+ZJ HTML Studio lets Obsidian Desktop open local `.html` and `.htm` files in native tabs. It supports scoped local resources, interactive online previews by default, optional restricted modes, live reload, read-only source view, page zoom, in-page search, fullscreen, and Markdown embeds.
+
+The native right-sidebar **讲义** tab lets you edit slide notes directly while a separate presentation window shows the course. Notes are ordinary Markdown sections such as `## 第 15 页` and stay in the local sidebar. Page recognition supports existing numbered decks, Reveal, Swiper and mutually exclusive slide layouts with arbitrary or missing IDs. Navigation uses the author's controls and confirms the actual page. Other HTML files can still present their visible course region as a live picture, without sharing the notes or desktop. No original HTML changes are required.
 
 ### Installation and usage
 
 1. Install **ZJ HTML Studio** from **Settings → Community plugins → Browse**, or download `main.js`, `manifest.json`, and `styles.css` from the matching [GitHub Release](https://github.com/AidenXu-1/zj-html-studio/releases) and place them in `<vault>/.obsidian/plugins/zj-html-studio/`.
 2. Enable the plugin in **Settings → Community plugins**.
 3. Click an `.html` or `.htm` file in the file explorer to preview it.
-4. Keep unfamiliar files in **Safe read-only** mode. Use **Local interactive** only for local pages you created and inspected; it blocks common fetch/XHR/WebSocket traffic but does not claim absolute offline isolation for navigation or WebRTC. Use **Trusted compatibility** only when a reviewed page also needs remote resources or network APIs.
+4. Buttons, navigation, animations, and online content work by default. Use **More → Page permissions** to turn off page interaction or networking for unfamiliar files. Existing saved restrictions are preserved. Extra local notes and data files require individual permission; networking does not grant clipboard, camera, or microphone access.
 5. To embed a page in Markdown, use `![[page.html]]`, `![[page.html|760]]`, or `![[page.html|760x430]]`.
 
-The plugin is desktop-only and requires Obsidian 1.12.7 or later. It does not collect telemetry or send vault content to a developer-operated service. Local previews bind only to `127.0.0.1` and are limited to the resource scope shown in the toolbar.
+The plugin is desktop-only and requires Obsidian 1.12.7 or later. It does not collect telemetry or send vault content to a developer-operated service. Local previews bind only to `127.0.0.1` and are limited to the resource scope available under **More → Page permissions**.
 
 ## 它解决什么
 
@@ -45,30 +49,55 @@ ZJ HTML Studio 为 `.html` 和 `.htm` 注册原生标签页视图。点击文件
 - 为系统浏览器创建独立、短时、需要再次授权的预览会话。
 - 一键定位源文件，并为任何 HTML 提供插件级全屏。
 - 在预览和只读源码之间切换，不改写磁盘上的 HTML。
-- 页面可在 50% 到 200% 之间缩放，并支持 `Ctrl/Cmd+F` 查找、上一处和下一处。
+- 页面可在 50% 到 200% 之间整体缩放，100% 保持默认适配，缩小时居中、放大后可滚动查看；支持 `Ctrl/Cmd+F` 查找、上一处和下一处。
+- 可识别页码的课件会查找整份已生成内容，按命中页前后切换，也可点结果数字直接选页；讲义和投屏跟随翻页。图片里的文字、未生成的动态内容与不可访问的区域不在查找范围内。
 - 在 Markdown 中嵌入 HTML，支持默认尺寸、指定宽度和指定宽高。
 - 笔记内嵌采用延迟加载、离屏回收和全局 8 会话上限，避免长笔记无界占用资源。
 
-## 三种打开模式
+## 直接打开与文件访问
 
-| 模式 | 适合什么页面 | 能做什么 |
-|---|---|---|
-| **安全只读**，默认 | 来源不明、只需查看排版的 HTML | 显示本地排版与媒体，关闭页面脚本、常见后台请求、外部子资源、表单、嵌套页面、Worker 和剪贴板能力 |
-| **本地交互** | 你自己制作并检查过、靠 JavaScript 渲染正文的本地课件 | 允许页面脚本和当前资源范围中的脚本，阻止常见 fetch/XHR/WebSocket、外部子资源、Worker、嵌套页、表单、剪贴板和 `unsafe-eval`；页面导航及 WebRTC 不作绝对离线承诺 |
-| **可信兼容** | 你自己制作或已经审查过的交互页面 | 允许脚本、模块、联网请求和剪贴板写入，同时继续限制页面只能读取工具栏显示的本地资源范围 |
+点击 HTML 即可使用按钮、翻页、动画和在线内容，不需要先选择打开模式。
 
-三种模式中的链接或页面跳转都仍可能离开本地预览地址。本地交互会执行页面脚本，当前 Chromium 不会执行 `webrtc 'none'`，因此只用于自己制作并检查过的文件。陌生 HTML 保持安全只读。
+自动加载课件本身、同目录常见配套资源及已识别的常见引用资源。其他笔记、数据文件需要在 **更多 → 页面信息与问题** 中逐个允许；只开放选中的文件，关闭课件后失效。文件较大或资源分析未完成，都不会自动开放整个知识库。
 
-如果页面的正文由 JavaScript 动态生成，安全只读会显示明确提醒和“本地交互打开”按钮，不再把纯背景或黑屏当成正常加载。
+联网不会自动开放剪贴板、摄像头或麦克风。需要复制时，可以在 **更多 → 页面权限…** 单独允许剪贴板写入；也可主动关闭联网或页面交互。已记住的文件夹规则仍然生效，设置中的默认开关控制没有例外规则的 HTML。
 
 ## 快速使用
 
 1. 在 **设置 → 第三方插件** 中启用 ZJ HTML Studio。
 2. 在文件列表中点击 `.html` 或 `.htm` 文件。
-3. 查看工具栏显示的安全模式与资源范围。
-4. 陌生页面保持“安全只读”；自己生成的本地脚本课件优先用“本地交互”；需要联网或远程资源时再使用“可信兼容”。
+3. 直接查看、翻页和操作课件。
+4. 需要查看或调整允许的功能时，打开 **更多 → 页面权限…**。
 
-工具栏提供刷新、自动刷新、浏览器打开、全屏、源文件定位、安全模式、资源范围和诊断入口。
+工具栏保持一行：预览/源码、缩放、查找、刷新、全屏、讲义、投屏和更多。**文件改动时自动刷新、在浏览器中打开、定位源文件、页面信息与问题** 收在更多菜单；查找、刷新仅在窄面板隐藏了外部按钮时出现在这里，避免重复入口。本地文件访问说明收在权限和页面信息里。
+
+### 逐页讲义与投屏演示
+
+1. 照常打开原来的 HTML 课件。点击工具栏的 **讲义**，直接在右栏写下提示，或从右上角关联已有笔记。右栏讲义和 Obsidian 原有大纲并存。
+2. 每份课件配一篇普通 Markdown 笔记，以 `## 第 1 页`、`## 第 2 页` 等二级标题区分页码。标题后可以加说明，每页下面自由写提示、大纲或其他 Markdown 内容。直接点击正文编辑，自动保存；不编辑的段落显示排版。首次写入时自动创建在统一的“讲义库”目录，已有讲义保留原位置；右上角可打开完整笔记。
+3. 已关联课件再次打开时自动显示讲义。课件自己的翻页按钮、键盘翻页、目录跳页，以及讲义栏底部的页码输入都会联动。底部下拉最多显示五行，更多页面在列表内滚动；保存失败会保留草稿并给出重试入口。
+4. 连接外接显示器，并在系统中选择 **扩展显示器**。点击 **投屏演示**，独立窗口从当前页自动移到外屏并全屏，本机继续保留课件和讲义。macOS 使用原位全屏，避免把本机切到另一个全屏桌面。未找到独立外屏时保留演示窗口；可手动移动、双击画面或点击“全屏演示”，线上会议可单独共享此窗口。
+5. 本机翻页会同步到投屏。开始后，本机按钮变为 **结束投屏**，点击即可关闭投屏窗口；查看源码时也能结束。关闭输出窗口或使用其中的“结束投屏”同样有效，本机保留当前页和讲义，可以继续讲课或重新投屏。
+6. 原 **全屏** 用于本机查看课件效果，按 **Esc** 返回原标签页和页码；投屏窗口中的 Esc 只退出该窗口的全屏。
+
+```markdown
+## 第 15 页 · 现场比较
+
+### 讲述提示
+先让大家回答，再展示下一页。
+
+### 本页大纲
+- 第一次提问
+- 观察回答的区别
+```
+
+页码识别支持连续 `p01…pNN`、`slide-01…slide-NN`、已有固定画布课件，以及 Reveal、Swiper 和任意名称或无 ID 的互斥页面。插件分别判断总页数、当前页和能否跳转，通过课件原有接口或按钮翻页，以实际显示结果确认，不改原文件。普通文章、文章里的轮播和存在多个独立轮播的页面不会被随意当成课件。
+
+能识别当前页但不能控制翻页时，讲义仍会自动跟随；手动选页只切换讲义，课件下一次翻页后恢复跟随。未识别分页时默认 `1 / 1`，保留灰色翻页按钮；若关联了多页讲义，可手动选讲义页。只打开不创建文件，首次实际写入才生成 Markdown。增加、删除或重排课件页后，请同时维护讲义页码。
+
+原有连续编号和按键课件沿用独立页码同步，不同步页内视频进度或表单。新增框架与其他 HTML 自动采用课件区域的实时画面，不增加模式选择。切到其他标签、课件被菜单遮挡时保留上一帧，恢复可见后继续；把源课件移到另一窗口会结束本次投屏，需要重新开始。画面按比例完整显示，声音仍由本机播放。当前画面模式主要用于讲课，不是高帧率视频共享。
+
+预览、页面查找和逐页投屏共用 64 MiB 的单文件上限。搜索只处理已加载的可读文字，跳过图片数据、脚本和样式，并分段执行；保留独立的文字量、节点数和匹配数保护。虚拟课件尚未生成的页面文字无法提前搜索。全屏会按课件自身布局适配窗口；响应式演示课件可以等比完整显示，插件不会改写原 HTML 的排版。
 
 ### 在笔记里嵌入
 
@@ -82,7 +111,7 @@ ZJ HTML Studio 为 `.html` 和 `.htm` 注册原生标签页视图。点击文件
 - 第二种指定宽度，高度仍为默认值。
 - 第三种指定宽高，笔记变窄时会按比例缩小。
 
-嵌入会沿用文件夹的安全/本地交互/可信规则。安全只读检测到页面脚本时，可对当前嵌入临时切换到本地交互。若页面需要读取较大范围，会先显示确认入口。Canvas 预览本轮未开启，会提供“在标签页打开”按钮。
+嵌入同样默认支持交互和联网，并沿用已有文件夹例外。额外文件可在 HTML 标签页中逐个允许。Canvas 预览本轮未开启，会提供“在标签页打开”按钮。
 
 ## 隐私与安全
 
@@ -91,14 +120,15 @@ ZJ HTML Studio 为 `.html` 和 `.htm` 注册原生标签页视图。点击文件
 - **账号与付费**：不需要注册账号，不包含付费功能。
 - **插件自身联网**：不会连接开发者运营的服务器，也没有云端处理流程。
 - **本地预览服务**：只绑定 `127.0.0.1`，使用系统随机端口；最后一个预览关闭或插件停用后自动停止。
-- **文件读取**：只读取当前仓库内、工具栏明确显示的资源范围；阻止仓库越界、目录遍历和符号链接逃逸。
-- **常见远程访问**：只有切换到“可信兼容”后，页面才能使用常见 HTTP/API 请求和远程子资源。
+- **文件读取**：按文件核验入口、配套资源与明确允许的额外文件；不因路由目录覆盖知识库而开放其中的笔记。隐藏配置和 Obsidian 配置目录不会随课件开放，仍阻止仓库越界、目录遍历和符号链接逃逸。
+- **常见远程访问**：正常打开默认支持 HTTP/API 请求和远程资源；可在页面权限中关闭常见联网通道。
 - **本地交互的边界**：Obsidian 1.12.7 实机探针表明当前 Chromium 不执行 `webrtc 'none'`。本地交互会阻止已列出的常见请求通道，但 WebRTC 仍可产生网络活动。
-- **本地存储**：仅通过插件的 `data.json` 保存自动刷新偏好，以及用户明确记住的安全、本地交互或可信目录规则。
+- **本地存储**：通过插件的 `data.json` 保存自动刷新偏好、用户明确记住的目录规则，以及 HTML 与讲义笔记的相对路径关联；讲义正文保存在用户选择的普通 Markdown 笔记里。
+- **讲义与投屏**：讲义正文不会发送到课件或投屏窗口。投屏沿用本机当前课件的资源范围和权限；关闭来源、撤回交互权限、结束投屏或停用插件后关闭对应投屏会话。
 - **内容处理**：不修改 HTML 及其依赖，不保存页面正文副本。
 - **页内查找**：安全模式只运行插件注入、带一次性密钥的最小查找桥；用户 HTML 里的脚本仍会被阻止。
-- **查找结果**：安全只读在有界预检后使用 Chromium 原生定位；本地交互与可信兼容使用可取消、分片执行的有界 DOM 定位，并明确标记“部分受限”，避免页面脚本制造的封闭区域或巨大 DOM 卡住 Obsidian。源码模式提供精确计数。
-- **HTML 大小**：为保证编码验证、并发保存和实际响应使用同一份内容，单个 HTML 上限为 32 MiB；最多同时保留两份快照，正常的多标签恢复会进入有界等待队列。较大的图片、视频和字体应拆为独立资源文件。
+- **查找结果**：安全只读在有界预检后使用 Chromium 原生定位；本地交互与可信兼容使用可取消、分片执行的有界 DOM 定位。正常结果显示命中页或位置，实际扫描不完整时才说明具体限制，避免巨大页面卡住 Obsidian。源码模式提供精确计数。
+- **HTML 大小**：为保证编码验证、并发保存和实际响应使用同一份内容，单个 HTML 上限为 64 MiB；最多同时保留两份快照，正常的多标签恢复会进入有界等待队列。较大的图片、视频和字体应拆为独立资源文件。
 - **日志与诊断**：诊断只记录路径和失败原因，不保存页面正文。
 - **数据收集**：没有遥测、统计分析、广告、用户画像或自更新机制。
 - **公开仓库隐私**：源码、测试和文档使用虚构夹具，不包含真实知识库内容、本机绝对路径、个人邮箱、访问令牌或真实工作截图。
@@ -130,12 +160,13 @@ ZJ HTML Studio 为 `.html` 和 `.htm` 注册原生标签页视图。点击文件
 - 最低 Obsidian 版本：`1.12.7`
 - 支持平台：macOS、Windows、Linux 桌面端
 - 不支持移动端，因为插件使用 Node.js 与 Electron 能力
-- `0.3.0` 已在 macOS / Obsidian 1.12.7 完成安全只读脚本提示、本地交互课件渲染与翻页、Markdown 嵌入、三态往返和最后会话回收的真实运行验收
-- 当前完整门禁包含 20 个测试文件、288 项测试；CI 会在 macOS、Windows、Linux 执行同一套 lint、类型检查、测试、生产构建、发布资产校验和高危依赖审计
+- `0.4.21` 已在 macOS 真实 Obsidian 中完成右栏编辑、页码同步、跨窗口移动、全屏退出和连续开启/关闭投屏检查。
+- 同一投屏路线已完成 HDMI 扩展屏实测：外屏只显示课件，本机保留讲义，15 → 16 → 15 同步且结束后保留当前页。会议软件实际共享尚未验证。
+- 当前本地验证包含 32 个测试文件、390 项自动测试、51 项 Chromium 检查，以及 lint、类型检查、生产构建和发布资产校验。公开 CI 覆盖 macOS、Windows、Linux；每次运行结果见仓库 Actions。
 
 Markdown HTML 嵌入会在启动时检查当前 Obsidian 是否提供扩展嵌入能力。若未来版本取消该能力，只会停用笔记内嵌并给出提示，HTML 原生标签页与其他功能仍可继续使用。
 
-Windows 与 Linux 已通过自动检查，但尚未完成真实 Obsidian 实机验收。
+Windows 与 Linux 尚未完成真实 Obsidian 实机验收。自动检查通过不代表所有显示器、主题和系统组合都已实测。
 
 ## 开发与验证
 
@@ -148,11 +179,11 @@ npm run check
 
 1. Obsidian 官方 ESLint 规则
 2. TypeScript 严格类型检查
-3. 20 个测试文件、288 项自动测试
+3. 32 个测试文件、390 项自动测试
 4. 最小化生产构建
 5. Release 安装文件一致性检查
 
-插件没有运行时第三方依赖。当前生产安装文件合计约 235 KiB；`node_modules/`、`dist/`、本地设置、日志和环境变量文件均不会进入 Git 历史。
+安装包已包含所需的讲义编辑组件，无需另行安装依赖。`node_modules/`、`dist/`、本地设置、日志和环境变量文件均不会进入 Git 历史。
 
 ## 为什么仓库保留这些文件
 

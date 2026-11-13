@@ -4,6 +4,7 @@ const MAX_LOCATION_COMPONENT_CHARACTERS = 4_096;
 const MAX_SCROLL_OFFSET = 10_000_000;
 
 export interface BridgePageState {
+  page?: number;
   hash?: string;
   pathname?: string;
   scrollX?: number;
@@ -12,6 +13,7 @@ export interface BridgePageState {
 }
 
 export interface PreviewReadingState {
+  page?: number;
   hash: string;
   scrollX: number;
   scrollY: number;
@@ -46,6 +48,7 @@ export function parseBridgePageState(
   if (search === null || hash === null) return null;
   return {
     hash,
+    ...(Number.isSafeInteger(value.page) && value.page! >= 1 && value.page! <= 500 ? { page: value.page } : {}),
     scrollX: normalizeScrollOffset(value.scrollX),
     scrollY: normalizeScrollOffset(value.scrollY),
     search,
@@ -88,7 +91,8 @@ export function isSameReadingLocation(
 ): boolean {
   return left.vaultRelativePath === right.vaultRelativePath
     && left.search === right.search
-    && left.hash === right.hash;
+    && left.hash === right.hash
+    && (right.page === undefined || left.page === right.page);
 }
 
 function sanitizeSearch(value: string | undefined): string | null {

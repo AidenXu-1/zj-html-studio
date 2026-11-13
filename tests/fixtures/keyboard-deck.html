@@ -1,0 +1,30 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+html,body{margin:0;height:100%;overflow:hidden;background:#20242c;color:white}
+#viewport{display:flex;justify-content:center;align-items:center;height:100%}
+#stage{position:relative;width:1280px;height:720px;flex-shrink:0;transform-origin:center}
+.slide{display:none;position:absolute;inset:0;padding:64px;box-sizing:border-box;background:#292e38}
+.slide.active{display:block}h1{font:48px system-ui}p{font:24px system-ui}
+nav{position:absolute;bottom:20px;left:30px}button{margin:8px}
+</style></head><body><div id="viewport"><main id="stage"></main></div>
+<nav><button id="prev">上一页</button><span id="curno">1</span> / <span id="totno">42</span><button id="next">下一页</button></nav>
+<script>
+(()=>{
+ const stage=document.getElementById('stage');
+ for(let i=1;i<=42;i++){
+  const slide=document.createElement('section');slide.className='slide';
+  const title=document.createElement('h1');title.textContent='Slide '+i;slide.append(title);
+  const text=document.createElement('p');text.textContent=i===15||i===16?'Shared keyword':'Page content';slide.append(text);stage.append(slide);
+ }
+ const slides=Array.from(stage.children);let current=Math.max(1,Math.min(42,Number(location.hash.slice(1))||1));
+ function render(){slides.forEach((s,i)=>s.classList.toggle('active',i+1===current));document.getElementById('curno').textContent=current;}
+ function go(n){current=Math.max(1,Math.min(42,n));render();history.replaceState(null,'','#'+current);}
+ document.getElementById('prev').onclick=()=>go(current-1);document.getElementById('next').onclick=()=>go(current+1);
+ document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight'||e.key==='PageDown'){e.preventDefault();go(current+1);}
+  else if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();go(current-1);}
+  else if(e.key==='Home'){e.preventDefault();go(1);}
+  else if(e.key==='End'){e.preventDefault();go(42);}
+ });
+ function fit(){stage.style.transform='scale('+Math.min(innerWidth/1280,innerHeight/720,1)+')';}addEventListener('resize',fit);fit();render();
+})();
+</script></body></html>

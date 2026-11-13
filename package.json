@@ -1,8 +1,8 @@
 {
   "name": "zj-html-studio",
-  "version": "0.3.2",
+  "version": "0.4.21",
   "private": true,
-  "description": "Preview, search, inspect, and embed local HTML files with scoped resources and live reload.",
+  "description": "Preview local HTML, follow slide notes, present in a separate window, and embed pages with scoped resources.",
   "main": "dist/main.js",
   "type": "module",
   "scripts": {
@@ -13,8 +13,17 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "test:obsidian": "node tests/runtime/presentation-regression.mjs",
+    "test:obsidian:search": "node tests/runtime/search-regression.mjs",
     "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run release:check",
-    "version": "node scripts/version-bump.mjs && git add manifest.json versions.json"
+    "version": "node scripts/version-bump.mjs && git add manifest.json versions.json",
+    "test:obsidian:lecture": "node tests/runtime/lecture-editor-regression.mjs",
+    "test:obsidian:page-info": "node tests/runtime/single-page-diagnostics.mjs",
+    "test:obsidian:resource-access": "node tests/runtime/default-opening.mjs",
+    "test:obsidian:canvas": "node tests/runtime/fixed-canvas.mjs",
+    "test:obsidian:display": "node tests/runtime/projection-display.mjs",
+    "test:obsidian:access-regression": "node tests/runtime/resource-access-regression.mjs"
   },
   "keywords": [
     "obsidian",
@@ -36,6 +45,11 @@
     "node": ">=20"
   },
   "devDependencies": {
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/lang-markdown": "6.5.2",
+    "@codemirror/language": "6.13.1",
+    "@codemirror/state": "6.5.0",
+    "@codemirror/view": "6.38.6",
     "@eslint/js": "9.39.4",
     "@types/node": "26.1.1",
     "esbuild": "0.28.1",
@@ -44,6 +58,7 @@
     "globals": "17.7.0",
     "jiti": "2.7.0",
     "obsidian": "1.13.1",
+    "playwright-core": "1.60.0",
     "typescript": "5.9.3",
     "typescript-eslint": "8.64.0",
     "vitest": "4.1.10"
