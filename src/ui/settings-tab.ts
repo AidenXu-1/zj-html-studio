@@ -11,9 +11,10 @@ import type HtmlStudioPlugin from "../main";
 import type { PreviewMode } from "../settings";
 
 const MODE_LABELS: Record<PreviewMode, string> = {
-  safe: "安全只读",
-  interactive: "本地交互",
-  trusted: "可信兼容"
+  standard: "正常打开",
+  safe: "仅查看",
+  interactive: "限制联网",
+  trusted: "联网并允许复制"
 };
 
 export class HtmlStudioSettingTab extends PluginSettingTab {
@@ -29,6 +30,11 @@ export class HtmlStudioSettingTab extends PluginSettingTab {
         heading: "预览与权限",
         items: [
           {
+            name: "默认启用交互和联网",
+            desc: "打开 HTML 即可使用按钮、翻页、动画和在线内容。已单独设置的文件夹仍按原规则打开。",
+            control: { key: "defaultInteraction", type: "toggle" }
+          },
+          {
             name: "自动刷新",
             desc: "HTML 或已识别依赖发生变化时自动重新分析并刷新对应预览。",
             control: { key: "autoReload", type: "toggle" }
@@ -42,7 +48,7 @@ export class HtmlStudioSettingTab extends PluginSettingTab {
       {
         type: "list",
         heading: "已记住的文件夹权限",
-        emptyState: "目前没有已记住的规则，HTML 默认使用安全只读。",
+        emptyState: "目前没有文件夹例外，按上方默认设置打开。",
         items: rules.map(rule => ({
           name: rule.scopePath,
           desc: `${MODE_LABELS[rule.mode]} · 影响这个文件夹及其没有更具体规则的子文件夹`
@@ -56,8 +62,8 @@ export class HtmlStudioSettingTab extends PluginSettingTab {
       {
         type: "group",
         items: [{
-          name: "恢复全部安全默认",
-          desc: "删除全部已记住规则，撤销系统浏览器会话，并立即把仍在运行的本地交互或可信页面降为安全只读。",
+          name: "全部改为仅查看",
+          desc: "删除全部已记住规则，撤销系统浏览器会话，并立即把仍在运行的限制联网或可信页面降为仅查看。",
           action: () => {
             void this.confirmAndReset(() => this.refreshDefinitions());
           }
@@ -67,10 +73,12 @@ export class HtmlStudioSettingTab extends PluginSettingTab {
   }
 
   override getControlValue(key: string): unknown {
+    if (key === "defaultInteraction") return this.plugin.settings.defaultMode !== "safe";
     return key === "autoReload" ? this.plugin.settings.autoReload : undefined;
   }
 
   override async setControlValue(key: string, value: unknown): Promise<void> {
+    if (key === "defaultInteraction" && typeof value === "boolean") await this.plugin.setDefaultInteraction(value);
     if (key === "autoReload" && typeof value === "boolean") {
       await this.plugin.setAutoReload(value);
     }
@@ -84,6 +92,12 @@ export class HtmlStudioSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new Setting(containerEl).setName("预览与权限").setHeading();
+
+    new Setting(containerEl)
+      .setName("默认启用交互和联网")
+      .setDesc("打开 HTML 即可使用按钮、翻页、动画和在线内容。已有文件夹规则保持不变。")
+      .addToggle(toggle => toggle.setValue(this.plugin.settings.defaultMode !== "safe")
+        .onChange(async enabled => { await this.plugin.setDefaultInteraction(enabled); }));
 
     new Setting(containerEl)
       .setName("自动刷新")
@@ -101,7 +115,7 @@ export class HtmlStudioSettingTab extends PluginSettingTab {
 
     const rules = this.getRules();
     if (rules.length === 0) {
-      containerEl.createEl("p", { text: "目前没有已记住的规则，HTML 默认使用安全只读。" });
+      containerEl.createEl("p", { text: "目前没有文件夹例外，按上方默认设置打开。" });
     } else {
       for (const rule of rules) {
         new Setting(containerEl)
@@ -119,8 +133,8 @@ export class HtmlStudioSettingTab extends PluginSettingTab {
     }
 
     new Setting(containerEl)
-      .setName("恢复全部安全默认")
-      .setDesc("删除全部已记住规则，撤销系统浏览器会话，并立即把仍在运行的本地交互或可信页面降为安全只读。")
+      .setName("全部改为仅查看")
+      .setDesc("删除全部已记住规则，撤销系统浏览器会话，并立即把仍在运行的限制联网或可信页面降为仅查看。")
       .addButton(button => {
         button.setButtonText("全部重置");
         styleDestructiveButton(button);
@@ -134,7 +148,7 @@ export class HtmlStudioSettingTab extends PluginSettingTab {
     const confirmed = await new ConfirmPermissionResetModal(this.app).waitForDecision();
     if (!confirmed) return;
     await this.plugin.resetScopeModes();
-    new Notice("已删除全部文件夹权限，运行中的页面已按安全只读重新检查。");
+    new Notice("已删除全部文件夹权限，运行中的页面已按仅查看重新检查。");
     refresh();
   }
 
@@ -145,6 +159,7 @@ export class HtmlStudioSettingTab extends PluginSettingTab {
 
   private getRules(): Array<{ mode: PreviewMode; scopePath: string }> {
     return [
+      ...(this.plugin.settings.standardScopes ?? []).map(scopePath => ({ mode: "standard" as const, scopePath })),
       ...this.plugin.settings.safeScopes.map(scopePath => ({ mode: "safe" as const, scopePath })),
       ...this.plugin.settings.interactiveScopes.map(scopePath => ({ mode: "interactive" as const, scopePath })),
       ...this.plugin.settings.trustedScopes.map(scopePath => ({ mode: "trusted" as const, scopePath }))
@@ -178,9 +193,9 @@ class ConfirmPermissionResetModal extends Modal {
   }
 
   override onOpen(): void {
-    this.setTitle("恢复全部安全默认？");
+    this.setTitle("全部改为仅查看？");
     this.contentEl.createEl("p", {
-      text: "这会删除全部文件夹权限规则，撤销系统浏览器会话，并立即停止仍在运行的本地交互或可信页面，再按安全只读重新打开。这个操作不会修改任何 HTML 文件。"
+      text: "这会删除全部文件夹权限规则，撤销系统浏览器会话，并立即停止仍在运行的限制联网或可信页面，再按仅查看重新打开。这个操作不会修改任何 HTML 文件。"
     });
     const actions = this.contentEl.createDiv({ cls: "html-studio-trust-actions" });
     const cancel = actions.createEl("button", { text: "取消" });

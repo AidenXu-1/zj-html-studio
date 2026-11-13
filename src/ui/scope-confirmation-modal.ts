@@ -1,5 +1,7 @@
-import { Modal, setIcon, type App } from "obsidian";
+import { Modal, type App } from "obsidian";
 import type { ScopeAnalysis } from "../scope/dependency-analyzer";
+import { getHtmlPermissionScopePath } from "../settings";
+import { renderResourceDetails, renderResourceFilename, renderResourceRange } from "./resource-access-content";
 import {
   canOfferEntryFolderSafeTrial,
   type ScopeConfirmationDecision
@@ -26,40 +28,48 @@ export class ScopeConfirmationModal extends Modal {
   }
 
   override onOpen(): void {
-    this.modalEl.addClass("html-studio-trust-modal");
-    this.setTitle("这个页面需要更大的资源范围");
+    this.modalEl.addClass("html-studio-access-modal", "html-studio-resource-modal");
+    this.setTitle("打开前确认文件访问");
+    const canPreview = canOfferEntryFolderSafeTrial(this.analysis);
+    const entryFolder = getHtmlPermissionScopePath(this.analysis.entryRelativePath);
+    const body = this.contentEl.createDiv({ cls: "html-studio-resource-body" });
+    renderResourceFilename(body, this.analysis.entryRelativePath);
+    const incomplete = !this.analysis.dependencyScopeAnalysis.complete;
+    body.createEl("p", { cls: "html-studio-access-intro", text: incomplete
+      ? this.analysis.dependencyScopeAnalysis.reason === "file-too-large"
+        ? "这份 HTML 较大，尚未确认全部配套文件的位置。"
+        : "页面内容较多，尚未确认全部配套文件的位置。"
+      : !entryFolder
+        ? "这份 HTML 位于知识库最外层，读取范围覆盖整个知识库。"
+        : this.analysis.scopeRelativePath !== entryFolder
+          ? "页面引用了所在文件夹之外的图片、样式或其他文件。"
+          : "请确认这份页面可以读取的文件夹。" });
+    renderResourceRange(body, this.analysis.scopeRelativePath);
+    renderResourceDetails(body, [
+      { label: "HTML 文件", path: this.analysis.entryRelativePath },
+      { label: "当前文件夹", path: entryFolder },
+      { label: "请求读取的范围", path: this.analysis.scopeRelativePath }
+    ], this.buildReasons());
 
-    const intro = this.contentEl.createDiv({ cls: "html-studio-trust-intro" });
-    const icon = intro.createDiv({ cls: "html-studio-trust-icon" });
-    setIcon(icon, "folder-key");
-    intro.createEl("p", {
-      text: "插件在创建本地预览会话前停了下来。请确认下面的范围确实属于这个页面。"
-    });
-
-    const scope = this.contentEl.createDiv({ cls: "html-studio-trust-scope" });
-    scope.createSpan({ text: "页面将能够请求的文件夹" });
-    scope.createEl("code", { text: this.analysis.scopeRelativePath || "整个知识仓库" });
-    scope.createEl("small", { text: this.buildReasonText() });
-
-    const footer = this.contentEl.createDiv({ cls: "html-studio-trust-footer" });
-    footer.createSpan({
-      text: "确认只负责创建资源范围；页面脚本是否运行仍由安全只读、本地交互或可信兼容决定。"
-    });
-    const actions = footer.createDiv({ cls: "html-studio-trust-actions" });
-    const cancel = actions.createEl("button", { text: "取消打开" });
+    const footer = this.contentEl.createDiv({ cls: "html-studio-resource-footer" });
+    footer.createEl("p", { cls: "html-studio-resource-hint", text: canPreview
+      ? "先预览只读取当前文件夹，页面交互暂不启用。"
+      : "仅对本次打开有效，页面现有功能权限保持不变。" });
+    const actions = footer.createDiv({ cls: "html-studio-access-actions" });
+    const cancel = actions.createEl("button", { text: "取消", cls: "html-studio-resource-cancel" });
     cancel.addEventListener("click", () => this.cancel());
-    if (canOfferEntryFolderSafeTrial(this.analysis)) {
-      const safeTrial = actions.createEl("button", { text: "先按当前文件夹安全打开" });
+    const confirm = actions.createEl("button", { cls: canPreview ? "" : "mod-cta", text: "允许并打开" });
+    confirm.addEventListener("click", () => {
+      this.settle("requested-scope");
+      this.close();
+    });
+    if (canPreview) {
+      const safeTrial = actions.createEl("button", { text: "先预览", cls: "mod-cta" });
       safeTrial.addEventListener("click", () => {
         this.settle("entry-folder-safe");
         this.close();
       });
     }
-    const confirm = actions.createEl("button", { cls: "mod-cta", text: "确认这个范围" });
-    confirm.addEventListener("click", () => {
-      this.settle("requested-scope");
-      this.close();
-    });
   }
 
   override onClose(): void {
@@ -67,13 +77,16 @@ export class ScopeConfirmationModal extends Modal {
     this.contentEl.empty();
   }
 
-  private buildReasonText(): string {
+  private buildReasons(): string[] {
     const reasons: string[] = [];
-    if (this.analysis.scopeRelativePath === "") reasons.push("资源范围触及了整个知识仓库");
-    if (this.analysis.climbLevels > 1) reasons.push(`资源跨越了 ${this.analysis.climbLevels} 层目录`);
-    if (this.analysis.absoluteReferences.length > 0) reasons.push("页面包含网站根路径");
-    if (this.analysis.escapedReferences.length > 0) reasons.push("页面包含尝试离开仓库的地址，这些读取仍会被阻止");
-    return reasons.length > 0 ? reasons.join("；") : "资源范围比 HTML 所在文件夹更大";
+    if (!this.analysis.dependencyScopeAnalysis.complete) {
+      reasons.push("文件分析尚未完成，更大的读取范围不代表已经确认需要全部文件。");
+    } else if (this.analysis.climbLevels > 0) {
+      reasons.push("配套文件分布在当前文件夹之外，因此读取范围包含它们共同所在的文件夹。");
+    }
+    if (this.analysis.absoluteReferences.length > 0) reasons.push("页面使用了从网站根目录开始的文件地址。");
+    if (this.analysis.escapedReferences.length > 0) reasons.push("指向知识库外的文件仍无法读取。");
+    return reasons;
   }
 
   private settle(decision: ScopeConfirmationDecision): void {

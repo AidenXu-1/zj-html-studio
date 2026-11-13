@@ -3,7 +3,8 @@ import { normalizeScopePath, type PreviewMode } from "../settings";
 const PREVIEW_MODE_PRIVILEGE: Record<PreviewMode, number> = {
   safe: 0,
   interactive: 1,
-  trusted: 2
+  standard: 2,
+  trusted: 3
 };
 
 export interface PreviewRecoveryOptions {

@@ -105,7 +105,7 @@ describe("reading tools", () => {
     expect(result.startsWith('<!-- banner --><!doctype html><html lang="zh"><head data-theme="paper"><script nonce="nonce123">')).toBe(true);
     expect(result.indexOf("<script")).toBeGreaterThan(result.indexOf("<head"));
     expect(result.indexOf("<script nonce")).toBeLessThan(result.indexOf("<meta charset"));
-    expect(result).toContain(')("channel456",false,false)');
+    expect(result).toContain(')("channel456",false,false,');
     expect(result).toContain("document.currentScript?.remove()");
     expect(result).toContain("if(parent===top)");
     expect(result).toContain("document.createTreeWalker");
@@ -125,8 +125,14 @@ describe("reading tools", () => {
     const source = '<html><body><template shadowrootmode="closed"><p>private component</p></template></body></html>';
     const result = injectSearchBridge(source, "nonce123", "channel456");
 
-    expect(result).toContain(')("channel456",true,false)');
+    expect(result).toContain(')("channel456",true,false,');
     expect(result).toContain("hasDeclarativeClosedShadowRoot");
+  });
+
+  it("recognizes mixed-case shadow attributes across byte-scan boundaries", () => {
+    const prefix = "<html><body>" + " ".repeat(64 * 1024 - 12 - 10 - 7);
+    const result = injectSearchBridge(prefix + '<template ShAdOwRoOtMoDe="cl&#111;sed"><p>private</p></template></body></html>', "nonce123", "channel456");
+    expect(result).toContain(')("channel456",true,false,');
   });
 
   it("decodes declarative shadow mode entities without matching tutorial text", () => {
@@ -141,8 +147,8 @@ describe("reading tools", () => {
       "channel456"
     );
 
-    expect(shadow).toContain(')("channel456",true,false)');
-    expect(tutorial).toContain(')("channel456",false,false)');
+    expect(shadow).toContain(')("channel456",true,false,');
+    expect(tutorial).toContain(')("channel456",false,false,');
   });
 
   it("finds closed shadow roots nested inside an active declarative open root", () => {
@@ -157,8 +163,8 @@ describe("reading tools", () => {
       "channel456"
     );
 
-    expect(activeNested).toContain(')("channel456",true,false)');
-    expect(inertNested).toContain(')("channel456",false,false)');
+    expect(activeNested).toContain(')("channel456",true,false,');
+    expect(inertNested).toContain(')("channel456",false,false,');
   });
 
   it("uses bounded manual search when page scripts can create opaque realms", () => {
@@ -169,7 +175,7 @@ describe("reading tools", () => {
       true
     );
 
-    expect(result).toContain(')("channel456",false,true)');
+    expect(result).toContain(')("channel456",false,true,');
     expect(result).toContain("runManualSearch");
     expect(result).toContain("installValueMutationHook");
     expect(result).toContain("nativeCheckVisibility");

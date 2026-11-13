@@ -1,7 +1,10 @@
-export type PreviewMode = "safe" | "interactive" | "trusted";
+export type PreviewMode = "safe" | "interactive" | "standard" | "trusted";
 
 export interface HtmlStudioSettings {
   autoReload: boolean;
+  defaultMode?: "standard" | "safe";
+  standardScopes?: string[];
+  lectureNotes?: Record<string, string>;
   interactiveScopes: string[];
   safeScopes: string[];
   trustedScopes: string[];
@@ -9,6 +12,8 @@ export interface HtmlStudioSettings {
 
 export const DEFAULT_SETTINGS: HtmlStudioSettings = {
   autoReload: true,
+  defaultMode: "standard",
+  standardScopes: [],
   interactiveScopes: [],
   safeScopes: [],
   trustedScopes: []
@@ -24,8 +29,11 @@ export class SerializedSettingsUpdater<T> {
   ) {}
 
   update(mutator: (current: T) => T): Promise<void> {
+    // Mutators return a new value for changes, or the current value for a no-op.
     const operation = this.tail.then(async () => {
-      const next = mutator(this.getCurrent());
+      const current = this.getCurrent();
+      const next = mutator(current);
+      if (next === current) return;
       await this.save(next);
       this.commit(next);
     });
@@ -70,15 +78,18 @@ export function resolveScopeMode(
   scopePath: string,
   trustedScopes: readonly string[],
   safeScopes: readonly string[] = [],
-  interactiveScopes: readonly string[] = []
+  interactiveScopes: readonly string[] = [],
+  standardScopes: readonly string[] = [],
+  defaultMode: "standard" | "safe" = "standard"
 ): PreviewMode {
   const normalizedScope = normalizeScopePath(scopePath);
-  if (!normalizedScope) return "safe";
+  if (!normalizedScope) return defaultMode;
 
   const candidates: Array<{ depth: number; mode: PreviewMode; privilege: number }> = [
     { depth: deepestMatchingScope(normalizedScope, safeScopes), mode: "safe", privilege: 0 },
     { depth: deepestMatchingScope(normalizedScope, interactiveScopes), mode: "interactive", privilege: 1 },
-    { depth: deepestMatchingScope(normalizedScope, trustedScopes), mode: "trusted", privilege: 2 }
+    { depth: deepestMatchingScope(normalizedScope, standardScopes), mode: "standard", privilege: 2 },
+    { depth: deepestMatchingScope(normalizedScope, trustedScopes), mode: "trusted", privilege: 3 }
   ];
   let selected = candidates[0]!;
   for (const candidate of candidates.slice(1)) {
@@ -86,7 +97,7 @@ export function resolveScopeMode(
       selected = candidate;
     }
   }
-  return selected.depth < 0 ? "safe" : selected.mode;
+  return selected.depth < 0 ? defaultMode : selected.mode;
 }
 
 export function addTrustedScope(

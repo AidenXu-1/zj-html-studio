@@ -165,4 +165,21 @@ describe("trusted scope settings", () => {
     });
     expect(saved).toHaveLength(2);
   });
+
+  it("checks no-op updates against the queued current state without writing unchanged settings", async () => {
+    let current = { path: "a" };
+    const saved: string[] = [];
+    const updater = new SerializedSettingsUpdater(
+      () => current,
+      async next => { saved.push(next.path); },
+      next => { current = next; }
+    );
+    await Promise.all([
+      updater.update(() => ({ path: "b" })),
+      updater.update(value => value.path === "b" ? { path: "c" } : value),
+      updater.update(value => value)
+    ]);
+    expect(current.path).toBe("c");
+    expect(saved).toEqual(["b", "c"]);
+  });
 });

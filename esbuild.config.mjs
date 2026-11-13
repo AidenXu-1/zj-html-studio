@@ -24,6 +24,8 @@ const context = await esbuild.context({
   external: [
     "obsidian",
     "electron",
+    "@codemirror/state", "@codemirror/view", "@codemirror/commands", "@codemirror/language",
+    "@codemirror/autocomplete", "@lezer/common", "@lezer/highlight", "@lezer/lr",
     ...builtinModules,
     ...builtinModules.map(moduleName => `node:${moduleName}`)
   ],

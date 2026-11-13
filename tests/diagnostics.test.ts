@@ -3,6 +3,7 @@ import {
   buildAnalysisDiagnostics,
   buildRuntimeDiagnostic,
   countAnalysisDiagnostics,
+  formatDiagnosticRequestPath,
   formatDisplayDiagnosticResolvedPath,
   getDisplayDiagnosticKey,
   getScriptRestrictionPresentation,
@@ -11,6 +12,17 @@ import {
 import type { ScopeAnalysis } from "../src/scope/dependency-analyzer";
 
 describe("display diagnostics", () => {
+  it("shows Chinese request paths readably without changing reserved URL separators", () => {
+    expect(formatDiagnosticRequestPath("/" + encodeURIComponent("课程 配图") + "/图片%2F1.png")).toBe("/课程 配图/图片%2F1.png");
+    expect(formatDiagnosticRequestPath("/图片.png?title=%E8%AF%BE%E7%A8%8B%26a%3Db")).toBe("/图片.png?title=课程%26a%3Db");
+  });
+
+  it("retains original paths containing malformed escapes or invisible controls", () => {
+    for (const value of ["/图%片.png", "/bad%E8%AF.png", "/a%0Ab.png", "/a%E2%80%AEb.png"]) {
+      expect(formatDiagnosticRequestPath(value)).toBe(value);
+    }
+  });
+
   it("turns analysis findings into plain-language cards", () => {
     const analysis: ScopeAnalysis = {
       absoluteReferences: ["/images/logo.svg"],
@@ -78,14 +90,14 @@ describe("display diagnostics", () => {
     };
 
     expect(buildAnalysisDiagnostics(analysis, 100, "safe")).toEqual([
-      expect.objectContaining({ title: "安全只读已关闭页面脚本" })
+      expect.objectContaining({ title: "此页面已设为仅查看" })
     ]);
     expect(countAnalysisDiagnostics(analysis, "safe")).toBe(1);
     expect(buildAnalysisDiagnostics(analysis, 100, "interactive")).toEqual([]);
     expect(countAnalysisDiagnostics(analysis, "trusted")).toBe(0);
   });
 
-  it("offers local interaction when a large page has no scripts in the scanned prefix", () => {
+  it("keeps scan budgets internal while offering recovery for explicit safe mode", () => {
     const incompleteAnalysisWarning = "文本依赖过大，只扫描前 5 MiB：output/index.html";
     const analysis: ScopeAnalysis = {
       absoluteReferences: [],
@@ -109,19 +121,13 @@ describe("display diagnostics", () => {
     };
 
     const presentation = getScriptRestrictionPresentation(analysis, "safe");
-    expect(presentation?.title).toBe("页面脚本分析未完成");
-    expect(presentation?.detail).toContain("可切换到“本地交互”");
-    expect(buildAnalysisDiagnostics(analysis, 100, "safe")).toEqual([
-      {
-        detail: incompleteAnalysisWarning,
-        level: "warning",
-        title: "依赖分析没有完全覆盖"
-      }
-    ]);
-    expect(countAnalysisDiagnostics(analysis, "safe")).toBe(1);
-    expect(getScriptRestrictionPresentation(analysis, "interactive")).toBeNull();
-    expect(buildAnalysisDiagnostics(analysis, 100, "interactive")).toHaveLength(1);
-    expect(countAnalysisDiagnostics(analysis, "interactive")).toBe(1);
+    expect(presentation?.title).toBe("此页面已设为仅查看");
+    expect(presentation?.detail).toContain("恢复正常打开");
+    for (const mode of ["safe", "interactive", "standard", "trusted"] as const) {
+      expect(buildAnalysisDiagnostics(analysis, 100, mode)).toEqual([]);
+      expect(countAnalysisDiagnostics(analysis, mode)).toBe(0);
+      if (mode !== "safe") expect(getScriptRestrictionPresentation(analysis, mode)).toBeNull();
+    }
   });
 
   it("replaces an embedded diagnostic absolute path before display", () => {
@@ -154,7 +160,7 @@ describe("display diagnostics", () => {
 
     expect(result.level).toBe("error");
     expect(result.title).toBe("资源超出了当前预览范围");
-    expect(result.detail).toContain("已阻止");
+    expect(result.detail).toContain("单独允许");
     expect(result.scopeExpansionCandidatePath).toBe("/vault/secret.md");
   });
 

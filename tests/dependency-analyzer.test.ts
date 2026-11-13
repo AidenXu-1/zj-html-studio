@@ -306,7 +306,7 @@ describe("dependency analyzer", () => {
     expect(result.dependencyRelativePaths).toContain("output/images/hero.svg");
     expect(result.scopeRelativePath).toBe("");
     expect(result.requiresConfirmation).toBe(true);
-    expect(result.warnings.join("\n")).toContain("保守资源范围");
+    expect(result.warnings.join("\n")).toContain("文件读取仍逐个核验");
   });
 
   it("keeps 16, 25, and 100 MiB pages recoverable when they use parent-folder resources", async () => {

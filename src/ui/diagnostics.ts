@@ -13,6 +13,16 @@ export interface DisplayDiagnostic {
   title: string;
 }
 
+/** Display only: preserve reserved separators, malformed URLs and control bytes. */
+export function formatDiagnosticRequestPath(value: string): string {
+  try {
+    const decoded = decodeURI(value);
+    return /[\p{Cc}\p{Cf}]/u.test(decoded) ? value : decoded;
+  } catch {
+    return value;
+  }
+}
+
 export interface ScriptRestrictionPresentation {
   detail: string;
   title: string;
@@ -24,21 +34,8 @@ export function getScriptRestrictionPresentation(
 ): ScriptRestrictionPresentation | null {
   if (mode !== "safe") return null;
 
-  if (analysis.pageScriptAnalysis.complete === false) {
-    const scannedDetail = analysis.pageScriptCount > 0
-      ? `已扫描部分检测到 ${analysis.pageScriptCount} 个页面脚本，但页面其余部分没有完成分析。`
-      : "页面较大，未检测到脚本只代表已经扫描的部分。";
-    return {
-      title: "页面脚本分析未完成",
-      detail: `${scannedDetail}安全只读仍会阻止用户脚本；如果画面为空，可切换到“本地交互”。`
-    };
-  }
-
-  if (analysis.pageScriptCount === 0) return null;
-  return {
-    title: "安全只读已关闭页面脚本",
-    detail: `检测到 ${analysis.pageScriptCount} 个页面脚本。这个页面的正文可能由脚本生成；如果画面为空，可切换到“本地交互”。`
-  };
+  if (analysis.pageScriptAnalysis.complete && analysis.pageScriptCount === 0) return null;
+  return { title: "此页面已设为仅查看", detail: "按钮、翻页和动画暂未运行，可恢复正常打开。" };
 }
 
 export function formatDisplayDiagnosticResolvedPath(
@@ -56,7 +53,6 @@ export function countAnalysisDiagnostics(analysis: ScopeAnalysis, mode: PreviewM
   return analysis.missingReferences.length
     + analysis.absoluteReferences.length
     + analysis.escapedReferences.length
-    + analysis.warnings.length
     + (mode === "safe" && analysis.pageScriptCount > 0 ? 1 : 0);
 }
 
@@ -71,9 +67,9 @@ export function buildAnalysisDiagnostics(
   };
 
   const scriptRestriction = getScriptRestrictionPresentation(analysis, mode);
-  // Incomplete scans are already represented by analysis.warnings. Add this
-  // card only for scripts positively detected, so the diagnostics do not
-  // repeat the same incomplete-analysis warning.
+  // A bounded scan is an internal state, not a broken page. Keep runtime
+  // failures actionable and describe an explicit script restriction only
+  // when scripts were positively detected.
   if (scriptRestriction && analysis.pageScriptCount > 0) {
     add(() => ({
       level: "warning",
@@ -103,12 +99,6 @@ export function buildAnalysisDiagnostics(
     detail: "ZJ HTML Studio 已阻止这次读取。"
   })));
 
-  analysis.warnings.forEach(warning => add(() => ({
-    level: "warning",
-    title: "依赖分析没有完全覆盖",
-    detail: warning
-  })));
-
   return diagnostics;
 }
 
@@ -119,6 +109,7 @@ export function buildRuntimeDiagnostic(diagnostic: PreviewDiagnostic): DisplayDi
     "invalid-method": "页面尝试执行不允许的本地操作",
     "invalid-path": "资源地址无法解析",
     "missing-file": "有一个本地资源没有找到",
+    "file-not-authorized": "这个文件需要你允许读取",
     "outside-scope": "资源超出了当前预览范围",
     "server-error": "本地预览服务发生错误"
   };
@@ -128,11 +119,11 @@ export function buildRuntimeDiagnostic(diagnostic: PreviewDiagnostic): DisplayDi
     title: titles[diagnostic.reason],
     requestedPath: diagnostic.requestPath,
     resolvedPath: diagnostic.resolvedPath,
-    scopeExpansionCandidatePath: diagnostic.reason === "outside-scope"
+    scopeExpansionCandidatePath: (diagnostic.reason === "outside-scope" || diagnostic.reason === "file-not-authorized")
       ? diagnostic.resolvedPath
       : undefined,
-    detail: diagnostic.reason === "outside-scope"
-      ? "ZJ HTML Studio 已阻止这次读取。如确实需要，请先确认页面来源和资源范围。"
+    detail: (diagnostic.reason === "outside-scope" || diagnostic.reason === "file-not-authorized")
+      ? "课件继续显示。需要这个文件时，可以单独允许，不会开放它所在的整个文件夹。"
       : diagnostic.reason === "diagnostic-limit"
         ? "为避免 Obsidian 卡顿，后续重复或新增错误已停止逐条记录。"
         : undefined

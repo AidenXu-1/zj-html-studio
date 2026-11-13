@@ -21,6 +21,8 @@ import {
 import { PreviewServer, type PreviewDiagnostic } from "./server/preview-server";
 import { HtmlStudioSettingTab } from "./ui/settings-tab";
 import { HtmlPreviewView, HTML_PREVIEW_VIEW_TYPE } from "./view/html-preview-view";
+import { Presenter } from "./presentation/presenter";
+import { normalizeLectureLinks, renameLectureLinks } from "./presentation/lecture-note";
 
 const LOG_PREFIX = "[ZJ HTML Studio]";
 
@@ -34,6 +36,7 @@ type ScopeModeListener = (change: ScopeModeChange) => void | Promise<void>;
 export default class HtmlStudioPlugin extends Plugin {
   settings: HtmlStudioSettings = { ...DEFAULT_SETTINGS, interactiveScopes: [], safeScopes: [], trustedScopes: [] };
   previewServer!: PreviewServer;
+  presenter!: Presenter;
   vaultBasePath = "";
   private readonly diagnosticSinks = new Map<string, (diagnostic: PreviewDiagnostic) => void>();
   private readonly embedSessionLimiter = new EmbedSessionLimiter(8);
@@ -65,6 +68,7 @@ export default class HtmlStudioPlugin extends Plugin {
 
     this.vaultBasePath = await canonicalizeVaultBasePath(adapter.getBasePath());
     this.previewServer = new PreviewServer(this.vaultBasePath, {
+      protectedDirectories: [this.app.vault.configDir],
       onDiagnostic: diagnostic => this.diagnosticSinks.get(diagnostic.sessionId ?? "")?.(diagnostic),
       onResourceAccess: access => {
         const relativePath = toVaultRelativePath(this.vaultBasePath, access.resolvedPath);
@@ -77,6 +81,7 @@ export default class HtmlStudioPlugin extends Plugin {
       onServerError: error => console.error(`${LOG_PREFIX} Preview server error`, error)
     });
 
+    this.presenter = this.addChild(new Presenter(this));
     this.registerView(HTML_PREVIEW_VIEW_TYPE, leaf => new HtmlPreviewView(leaf, this));
     this.registerExtensions(["html", "htm"], HTML_PREVIEW_VIEW_TYPE);
     this.addSettingTab(new HtmlStudioSettingTab(this.app, this));
@@ -194,7 +199,9 @@ export default class HtmlStudioPlugin extends Plugin {
       scopePath,
       this.settings.trustedScopes,
       this.settings.safeScopes,
-      this.settings.interactiveScopes
+      this.settings.interactiveScopes,
+      this.settings.standardScopes,
+      this.settings.defaultMode
     );
   }
 
@@ -204,12 +211,14 @@ export default class HtmlStudioPlugin extends Plugin {
       let interactiveScopes = removeInteractiveScope(normalizedScopePath, current.interactiveScopes);
       let safeScopes = removeSafeScope(normalizedScopePath, current.safeScopes);
       let trustedScopes = removeTrustedScope(normalizedScopePath, current.trustedScopes);
+      let standardScopes = removeTrustedScope(normalizedScopePath, current.standardScopes ?? []);
 
       if (mode === "safe") safeScopes = addSafeScope(normalizedScopePath, safeScopes);
       if (mode === "interactive") interactiveScopes = addInteractiveScope(normalizedScopePath, interactiveScopes);
       if (mode === "trusted") trustedScopes = addTrustedScope(normalizedScopePath, trustedScopes);
+      if (mode === "standard") standardScopes = addTrustedScope(normalizedScopePath, standardScopes);
 
-      return { ...current, interactiveScopes, safeScopes, trustedScopes };
+      return { ...current, interactiveScopes, safeScopes, trustedScopes, standardScopes };
     });
     await this.notifyScopeModeChange({ forceSafeReset: false, scopePath: normalizedScopePath });
   }
@@ -218,6 +227,9 @@ export default class HtmlStudioPlugin extends Plugin {
     const normalizedScopePath = normalizeScopePath(scopePath);
     await this.settingsUpdater.update(current => ({
       ...current,
+      standardScopes: mode === "standard"
+        ? removeTrustedScope(normalizedScopePath, current.standardScopes ?? [])
+        : current.standardScopes,
       interactiveScopes: mode === "interactive"
         ? removeInteractiveScope(normalizedScopePath, current.interactiveScopes)
         : current.interactiveScopes,
@@ -234,6 +246,8 @@ export default class HtmlStudioPlugin extends Plugin {
   async resetScopeModes(): Promise<void> {
     await this.settingsUpdater.update(current => ({
       ...current,
+      defaultMode: "safe",
+      standardScopes: [],
       interactiveScopes: [],
       safeScopes: [],
       trustedScopes: []
@@ -241,9 +255,34 @@ export default class HtmlStudioPlugin extends Plugin {
     await this.notifyScopeModeChange({ forceSafeReset: true, scopePath: null });
   }
 
+  async setDefaultInteraction(enabled: boolean): Promise<void> {
+    await this.settingsUpdater.update(current => ({ ...current, defaultMode: enabled ? "standard" : "safe" }));
+    await this.notifyScopeModeChange({ forceSafeReset: false, scopePath: null });
+  }
+
   async setAutoReload(enabled: boolean): Promise<void> {
     await this.settingsUpdater.update(current => ({ ...current, autoReload: enabled }));
     this.autoReloadListeners.forEach(listener => listener());
+  }
+
+  async setLectureAssociation(sourcePath: string, notePath: string | null): Promise<void> {
+    await this.settingsUpdater.update(current => {
+      const links = { ...current.lectureNotes };
+      if (notePath === null) delete links[sourcePath];
+      else links[sourcePath] = notePath;
+      return { ...current, lectureNotes: normalizeLectureLinks(links) };
+    });
+  }
+
+  async renameLectureAssociations(oldPath: string, newPath: string): Promise<void> {
+    await this.settingsUpdater.update(current => {
+      const entries = Object.entries(current.lectureNotes ?? {});
+      if (!entries.some(([source, target]) => [source, target].some(value => value === oldPath || value.startsWith(`${oldPath}/`)))) return current;
+      return {
+        ...current,
+        lectureNotes: renameLectureLinks(current.lectureNotes ?? {}, oldPath, newPath)
+      };
+    });
   }
 
   revealActiveFile(): void {
@@ -258,7 +297,12 @@ export default class HtmlStudioPlugin extends Plugin {
   private async loadSettings(): Promise<void> {
     const stored = (await this.loadData()) as Partial<HtmlStudioSettings> | null;
     this.settings = {
+      defaultMode: stored?.defaultMode === "safe" ? "safe" : "standard",
+      standardScopes: Array.isArray(stored?.standardScopes)
+        ? stored.standardScopes.filter((scope): scope is string => typeof scope === "string").map(normalizeScopePath).filter(Boolean)
+        : [],
       autoReload: stored?.autoReload ?? DEFAULT_SETTINGS.autoReload,
+      lectureNotes: normalizeLectureLinks(stored?.lectureNotes),
       interactiveScopes: Array.isArray(stored?.interactiveScopes)
         ? stored.interactiveScopes
           .filter((scope): scope is string => typeof scope === "string")

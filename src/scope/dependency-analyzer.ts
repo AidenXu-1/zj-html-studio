@@ -419,7 +419,7 @@ export async function analyzePreviewScope(
   }
 
   if (!dependencyScopeAnalysis.complete) {
-    warnings.add("资源分析未完成；为避免大文件出现无法恢复的缺图或缺样式，确认后将使用整个知识仓库作为保守资源范围");
+    warnings.add("资源分析未完成；使用知识库根目录定位资源，但文件读取仍逐个核验");
   }
   const scopeAbsolutePath = dependencyScopeAnalysis.complete
     ? findCommonDirectory([...scopeCandidates])

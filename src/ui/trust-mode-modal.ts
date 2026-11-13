@@ -1,183 +1,129 @@
-import { Modal, Notice, setIcon } from "obsidian";
-import type { App } from "obsidian";
+import { Modal, Notice, type App } from "obsidian";
 import type { PreviewMode } from "../settings";
 import { toUserFacingPreviewError } from "./error-message";
-import { movePreviewModeSelection } from "./mode-choice-navigation";
-
-const MODE_ACTION_LABELS: Record<PreviewMode, string> = {
-  safe: "安全只读",
-  interactive: "本地交互打开",
-  trusted: "可信打开"
-};
 
 interface TrustModeModalOptions {
   currentMode: PreviewMode;
   onChoose: (mode: PreviewMode, remember: boolean) => boolean | Promise<boolean>;
   permissionScopePath: string;
   resourceScopePath: string;
+  requestMode?: "standard" | "trusted";
 }
 
+/** Presents capabilities honestly while retaining the existing enforcement modes. */
 export class TrustModeModal extends Modal {
   private cancelled = false;
-  private mode: PreviewMode;
+  private applying = false;
   private remember = false;
 
-  constructor(
-    app: App,
-    private readonly options: TrustModeModalOptions
-  ) {
-    super(app);
-    this.mode = options.currentMode;
-  }
+  constructor(app: App, private readonly options: TrustModeModalOptions) { super(app); }
 
   override onOpen(): void {
-    this.modalEl.addClass("html-studio-trust-modal");
-    this.setTitle("选择这个页面的打开方式");
-
-    const intro = this.contentEl.createDiv({ cls: "html-studio-trust-intro" });
-    const icon = intro.createDiv({ cls: "html-studio-trust-icon" });
-    setIcon(icon, "shield-check");
-    intro.createEl("p", {
-      text: "按页面来源和需要选择权限。页面里的链接或跳转在三种模式下仍可能离开本地预览。"
-    });
-
-    const choices = this.contentEl.createDiv({ cls: "html-studio-trust-choices" });
-    choices.setAttribute("role", "radiogroup");
-    choices.setAttribute("aria-label", "页面打开方式");
-    const safeChoice = this.createChoice(
-      choices,
-      "safe",
-      "安全只读",
-      "适合来源不明的页面。排版和本地媒体可查看，脚本、后台网络请求、外部资源和剪贴板关闭。",
-      true
-    );
-    const interactiveChoice = this.createChoice(
-      choices,
-      "interactive",
-      "本地交互",
-      "只适合你自己制作并检查过的本地课件。页面脚本和范围内资源可用；常见 fetch、XHR、WebSocket 与外部资源受阻，页面导航和 WebRTC 仍可能产生网络活动。",
-      false
-    );
-    const trustedChoice = this.createChoice(
-      choices,
-      "trusted",
-      "可信兼容",
-      "适合你自己生成的课程和公众号页面。脚本、模块、网络请求和剪贴板可用；Obsidian 内仍限制表单提交、弹窗和下载。",
-      false
-    );
-
-    const permissionScope = this.contentEl.createDiv({ cls: "html-studio-trust-scope" });
-    permissionScope.createSpan({ text: "记住选择时适用的 HTML 文件夹" });
-    permissionScope.createEl("code", {
-      text: this.options.permissionScopePath || "仓库根目录（不能永久记住）"
-    });
-    permissionScope.createEl("small", {
-      text: "这里只决定该文件夹内 HTML 的默认打开方式，不会扩大页面可读取的本地资源。更具体的子文件夹规则优先。"
-    });
-
-    const resourceScope = this.contentEl.createDiv({ cls: "html-studio-trust-scope" });
-    resourceScope.createSpan({ text: "这个页面可以读取的本地资源范围" });
-    resourceScope.createEl("code", { text: this.options.resourceScopePath || "整个知识仓库" });
-    resourceScope.createEl("small", {
-      text: "本地交互和可信页面都看不到 Obsidian 主窗口，也不能读取这个文件夹之外的知识内容。本地交互会阻止常见后台请求，但页面导航与点对点通信不作离线承诺。"
-    });
-
-    const footer = this.contentEl.createDiv({ cls: "html-studio-trust-footer" });
-    const rememberLabel = footer.createEl("label", { cls: "html-studio-remember" });
-    const checkbox = rememberLabel.createEl("input", { type: "checkbox" });
-    checkbox.disabled = this.options.permissionScopePath === "";
-    checkbox.addEventListener("change", () => {
-      this.remember = checkbox.checked;
-    });
-    rememberLabel.createSpan({
-      text: this.options.permissionScopePath === ""
-        ? "仓库根目录中的 HTML 不能永久记住权限"
-        : "记住这个 HTML 文件夹的选择"
-    });
-
-    const actions = footer.createDiv({ cls: "html-studio-trust-actions" });
-    const cancel = actions.createEl("button", { text: "取消" });
-    cancel.addEventListener("click", () => this.cancel());
-    const confirm = actions.createEl("button", { cls: "mod-cta", text: MODE_ACTION_LABELS[this.mode] });
-    confirm.addEventListener("click", () => {
-      void this.confirmChoice(confirm);
-    });
-
-    const updateSelection = (): void => {
-      for (const choice of [safeChoice, interactiveChoice, trustedChoice]) {
-        const selected = choice.dataset.mode === this.mode;
-        choice.toggleClass("is-selected", selected);
-        choice.setAttribute("aria-checked", selected.toString());
-        choice.tabIndex = selected ? 0 : -1;
-      }
-      confirm.setText(MODE_ACTION_LABELS[this.mode]);
-    };
-    const modeChoices: Record<PreviewMode, HTMLButtonElement> = {
-      safe: safeChoice,
-      interactive: interactiveChoice,
-      trusted: trustedChoice
-    };
-    const selectMode = (mode: PreviewMode, focus: boolean): void => {
-      this.mode = mode;
-      updateSelection();
-      if (focus) modeChoices[mode].focus();
-    };
-    for (const choice of Object.values(modeChoices)) {
-      choice.addEventListener("click", () => selectMode(choice.dataset.mode as PreviewMode, false));
-      choice.addEventListener("keydown", event => {
-        const nextMode = movePreviewModeSelection(this.mode, event.key);
-        if (nextMode === this.mode && !["Home", "End"].includes(event.key)) return;
-        event.preventDefault();
-        selectMode(nextMode, true);
-      });
-    }
-    updateSelection();
+    this.modalEl.addClass("html-studio-access-modal");
+    if (this.options.requestMode) this.renderRequest(this.options.requestMode);
+    else this.renderOverview();
   }
 
-  override onClose(): void {
+  override onClose(): void { this.cancelled = true; this.contentEl.empty(); }
+  cancel(): void { this.close(); }
+
+  private renderOverview(): void {
     this.contentEl.empty();
+    this.setTitle("页面权限");
+    this.contentEl.createEl("p", { cls: "html-studio-access-intro", text: "查看当前允许的功能，随时可以关闭。" });
+    const rows = this.contentEl.createDiv({ cls: "html-studio-access-rows" });
+    const interactive = this.options.currentMode !== "safe";
+    const trusted = this.options.currentMode === "trusted";
+    const online = trusted || this.options.currentMode === "standard";
+    this.createPermissionRow(rows, "页面交互", "按钮、翻页与动画", interactive, button => {
+      if (interactive) void this.apply("safe", false, button);
+      else void this.apply("standard", false, button);
+    });
+    this.createPermissionRow(rows, "联网", "加载在线图片、字体及其他在线内容", online, button => {
+      void this.apply(online ? "interactive" : "standard", false, button);
+    });
+    if (online) this.createPermissionRow(rows, "复制到剪贴板", "允许页面写入，不读取剪贴板", trusted, button => {
+      if (trusted) void this.apply("standard", false, button);
+      else this.renderRequest("trusted");
+    });
+    this.contentEl.createEl("p", { cls: "html-studio-access-note", text: "联网不会自动开放剪贴板、摄像头或麦克风。" });
+    renderResourceScope(this.contentEl, this.options.resourceScopePath);
+    const footer = this.contentEl.createDiv({ cls: "html-studio-access-actions" });
+    const done = footer.createEl("button", { text: "完成", cls: "mod-cta" });
+    done.addEventListener("click", () => this.close());
   }
 
-  cancel(): void {
-    this.cancelled = true;
-    this.close();
+  private createPermissionRow(parent: HTMLElement, title: string, detail: string, enabled: boolean, action: (button: HTMLButtonElement) => void): void {
+    const row = parent.createDiv({ cls: "html-studio-access-row" });
+    const copy = row.createDiv({ cls: "html-studio-access-copy" });
+    copy.createEl("strong", { text: title });
+    copy.createEl("p", { text: detail });
+    const controls = row.createDiv({ cls: "html-studio-access-row-actions" });
+    controls.createSpan({ cls: "html-studio-access-state", text: enabled ? "已启用" : "未启用" });
+    const button = controls.createEl("button", { cls: "html-studio-text-action", text: enabled ? "关闭" : "启用…" });
+    button.setAttribute("aria-label", `${enabled ? "关闭" : "启用"}${title}`);
+    button.addEventListener("click", () => { if (!this.applying) action(button); });
   }
 
-  private async confirmChoice(confirm: HTMLButtonElement): Promise<void> {
-    if (confirm.disabled) return;
-    confirm.disabled = true;
+  private renderRequest(mode: "standard" | "trusted"): void {
+    this.contentEl.empty();
+    this.remember = false;
+    this.setTitle(mode === "standard" ? "恢复正常打开？" : "允许复制到剪贴板？");
+    this.contentEl.createEl("p", { cls: "html-studio-access-intro", text: mode === "standard"
+      ? "恢复按钮、翻页、动画和在线内容。额外的本地文件仍需单独允许。"
+      : "允许这个页面把内容复制到剪贴板。页面不能读取你已经复制的内容。" });
+    renderResourceScope(this.contentEl, this.options.resourceScopePath);
+    if (this.options.permissionScopePath) {
+      const label = this.contentEl.createEl("label", { cls: "html-studio-access-remember" });
+      const checkbox = label.createEl("input", { type: "checkbox" });
+      checkbox.checked = false;
+      checkbox.addEventListener("change", () => { this.remember = checkbox.checked; });
+      const copy = label.createDiv();
+      copy.createSpan({ text: `记住「${folderName(this.options.permissionScopePath)}」的选择` });
+      copy.createEl("small", { text: "此文件夹的其他 HTML 也会使用，已单独设置的子文件夹除外。" });
+      label.title = this.options.permissionScopePath;
+    }
+    const footer = this.contentEl.createDiv({ cls: "html-studio-access-actions" });
+    const cancel = footer.createEl("button", { text: this.options.requestMode ? "暂不启用" : "返回" });
+    cancel.addEventListener("click", () => {
+      if (this.applying) return;
+      if (this.options.requestMode) this.cancel(); else this.renderOverview();
+    });
+    const confirm = footer.createEl("button", { text: mode === "standard" ? "恢复正常打开" : "允许复制", cls: "mod-cta" });
+    confirm.addEventListener("click", () => { void this.apply(mode, this.remember, confirm); });
+  }
+
+  private async apply(mode: PreviewMode, remember: boolean, button: HTMLButtonElement): Promise<void> {
+    if (this.applying || this.cancelled) return;
+    this.applying = true;
+    const label = button.textContent ?? "重试";
+    button.setText("正在更新…");
+    this.contentEl.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button, input").forEach(el => { el.disabled = true; });
     try {
-      const applied = await this.options.onChoose(this.mode, this.remember);
+      const applied = await this.options.onChoose(mode, remember);
       if (this.cancelled) return;
-      if (!applied) {
-        new Notice("页面刚刚发生了刷新，本次选择没有生效，请重新选择。");
-        confirm.disabled = false;
-        return;
-      }
-      this.close();
+      if (applied) { this.close(); return; }
+      new Notice("页面刚刚发生了刷新，本次选择没有生效，请重新选择。");
     } catch (error) {
       if (this.cancelled) return;
       console.error("[ZJ HTML Studio] Failed to update preview mode", error);
       new Notice(toUserFacingPreviewError(error, "page"));
-      confirm.disabled = false;
+    } finally {
+      this.applying = false;
+      if (!this.cancelled) {
+        button.setText(label);
+        this.contentEl.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button, input").forEach(el => { el.disabled = false; });
+      }
     }
   }
+}
 
-  private createChoice(
-    parent: HTMLElement,
-    mode: PreviewMode,
-    title: string,
-    description: string,
-    recommended: boolean
-  ): HTMLButtonElement {
-    const choice = parent.createEl("button", { cls: "html-studio-trust-choice", type: "button" });
-    choice.dataset.mode = mode;
-    choice.setAttribute("role", "radio");
-    choice.createSpan({ cls: "html-studio-radio" });
-    const copy = choice.createDiv();
-    copy.createEl("strong", { text: title });
-    copy.createEl("p", { text: description });
-    if (recommended) choice.createSpan({ cls: "html-studio-recommended", text: "推荐" });
-    return choice;
-  }
+export function folderName(path: string): string { return path.split("/").filter(Boolean).pop() || "整个知识仓库"; }
+
+export function renderResourceScope(parent: HTMLElement, scopePath: string): void {
+  const details = parent.createEl("details", { cls: "html-studio-access-scope" });
+  const summary = details.createEl("summary");
+  summary.createSpan({ text: "本地文件访问" });
+  summary.createSpan({ cls: "html-studio-folder-name", text: "课件与配套资源" });
+  details.createEl("p", { cls: "html-studio-access-note", text: "额外的笔记和数据文件单独允许，仅对当前课件有效。不会自动开放整个知识库或插件配置。" });
 }

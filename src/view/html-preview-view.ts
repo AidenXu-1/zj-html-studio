@@ -1,32 +1,34 @@
-import { FileView, Notice, setIcon, type TFile, type WorkspaceLeaf } from "obsidian";
+import { FileView, Menu, Notice, setIcon, type TFile, type WorkspaceLeaf } from "obsidian";
 import { shell } from "electron";
 import path from "node:path";
 import type HtmlStudioPlugin from "../main";
 import type { ScopeModeChange } from "../main";
 import { analyzePreviewScope, type ScopeAnalysis } from "../scope/dependency-analyzer";
 import { toVaultRelativePath } from "../scope/vault-path";
-import { applyEntryFolderSafeTrial } from "../scope/resource-scope-policy";
+import { getGrantedResourceScope } from "../server/resource-access-policy";
 import { getHtmlPermissionScopePath, type PreviewMode } from "../settings";
 import { UnsupportedHtmlEncodingError } from "../server/html-encoding";
 import type {
   PreviewDiagnostic,
+  PreviewDocumentLoadTicket,
   PreviewSession,
   PreviewSessionProbeResult
 } from "../server/preview-server";
 import type { SearchBridgeMessage } from "../server/search-bridge";
+import { PageMenu } from "./page-menu";
 import { BrowserOpenModal } from "../ui/browser-open-modal";
 import {
   buildAnalysisDiagnostics,
   buildRuntimeDiagnostic,
   countAnalysisDiagnostics,
+  formatDiagnosticRequestPath,
   type DisplayDiagnostic,
   getScriptRestrictionPresentation,
   upsertDisplayDiagnostic
 } from "../ui/diagnostics";
 import { isFullscreenTarget, toggleFullscreenTarget } from "../ui/fullscreen";
-import { ScopeConfirmationModal } from "../ui/scope-confirmation-modal";
 import { ScopeExpansionModal } from "../ui/scope-expansion-modal";
-import { TrustModeModal } from "../ui/trust-mode-modal";
+import { renderResourceScope, TrustModeModal } from "../ui/trust-mode-modal";
 import { PreviewEntryProbeError, toUserFacingPreviewError } from "../ui/error-message";
 import {
   applyModeChoice,
@@ -36,7 +38,6 @@ import {
   isPolicyBoundLoadCurrent,
   resolvePreviewMode,
   resolveSessionlessPolicyReloadMode,
-  shouldConfirmScope,
   type PreviewRecoveryOptions
 } from "./preview-load-policy";
 import { canOpenBrowserSession, MAX_BROWSER_SESSIONS_PER_VIEW } from "./browser-session-policy";
@@ -44,8 +45,7 @@ import { decideAutoReloadAction, isAutoReloadCandidateCurrent } from "./auto-rel
 import { PreviewCandidateReadiness } from "./preview-candidate-readiness";
 import {
   getPreviewIframeAllow,
-  getPreviewIframeSandbox,
-  getPreviewModePresentation
+  getPreviewIframeSandbox
 } from "./preview-mode";
 import {
   isSourceReadCurrent,
@@ -65,6 +65,8 @@ import {
   type SourceLineIndex
 } from "./text-search";
 import { stepPreviewZoom } from "./zoom";
+import { isDeckPageNumber, parseDeckState, type DeckState } from "../presentation/deck-state";
+import type { LectureContext, PresentationContext } from "../presentation/presenter";
 import {
   buildReadingStateUrl,
   isReadingStateRestorable,
@@ -94,6 +96,7 @@ interface SourceReadingState {
 }
 
 interface PreparedPreviewCandidate {
+  hasSearchBridge: boolean;
   diagnostics: PreviewDiagnostic[];
   dependencies: Set<string>;
   host: HTMLElement;
@@ -109,12 +112,18 @@ export const HTML_PREVIEW_VIEW_TYPE = "html-studio-preview";
 
 export class HtmlPreviewView extends FileView {
   private activeIframe: HTMLIFrameElement | null = null;
+  private initialDocumentLoadTicket: PreviewDocumentLoadTicket | null = null;
+  private iframeLoadGeneration = 0;
+  private singlePageLectureFile: TFile | null = null;
+  private iframeOwnerWindow: Window | null = null;
+  private windowRestoreState: PreviewReadingState | null = null;
   private analysis: ScopeAnalysis | null = null;
   private activePageRestoreState: PreviewReadingState | null = null;
-  private autoReloadButton: HTMLButtonElement | null = null;
+  private autoReloadChanging = false;
+  private activeMenu: Menu | null = null;
   private activeBrowserModal: BrowserOpenModal | null = null;
   private activeModeModal: TrustModeModal | null = null;
-  private activeScopeModal: ScopeConfirmationModal | null = null;
+  private approvedResourceFiles: string[] = [];
   private activeScopeExpansionModal: ScopeExpansionModal | null = null;
   private readonly browserSessions = new Map<string, number>();
   private browserSessionOpenInProgress = false;
@@ -126,13 +135,19 @@ export class HtmlPreviewView extends FileView {
   private candidateProbeAbortController: AbortController | null = null;
   private candidateTransitionGeneration = 0;
   private readonly reloadRegistrationId: string;
-  private diagnosticBadge: HTMLElement | null = null;
+  private moreButton: HTMLButtonElement | null = null;
+  private refreshButton: HTMLButtonElement | null = null;
   private deferredFullscreenReload = false;
   private deferredManualReload = false;
   private diagnostics: DisplayDiagnostic[] = [];
   private diagnosticsDrawer: HTMLElement | null = null;
-  private diagnosticsRenderFrame: number | null = null;
+  private diagnosticsRenderFrame: { owner: Window; id: number } | null = null;
   private fullscreenButton: HTMLButtonElement | null = null;
+  private projectionButton: HTMLButtonElement | null = null;
+  private lectureButton: HTMLButtonElement | null = null;
+  private deckState: DeckState | null = null;
+  private documentRevision: string | null = null;
+  private unregisterPresentationSource: (() => void) | null = null;
   private iframeHost: HTMLElement | null = null;
   private previewCanvas: HTMLElement | null = null;
   private loadAbortController: AbortController | null = null;
@@ -140,16 +155,23 @@ export class HtmlPreviewView extends FileView {
   private lastPageReadingState: PreviewReadingState | null = null;
   private readingStateRevision = 0;
   private readonly readingStateWaiters = new Set<() => void>();
+  private readonly windowEventCleanup = new Map<Window, () => void>();
+  private readonly candidateWindowListeners = new Set<(event: MessageEvent<unknown>) => void>();
   private mode: PreviewMode = "safe";
   private modeOverride: PreviewMode | null = null;
-  private modeButton: HTMLButtonElement | null = null;
+  private previewTabButton: HTMLButtonElement | null = null;
   private previewPolicyGeneration = 0;
   private permissionScopePath: string | null = null;
   private searchBar: HTMLElement | null = null;
   private searchBridgePort: MessagePort | null = null;
   private searchBridgeReady = false;
+  private deferredPreviewSearch: { direction: "current" | "next" | "previous"; targetPage?: number } | null = null;
   private searchButton: HTMLButtonElement | null = null;
-  private searchCount: HTMLElement | null = null;
+  private searchCount: HTMLButtonElement | null = null;
+  private searchPageMenu: PageMenu | null = null;
+  private searchMatchPages: number[] = [];
+  private searchPrevious: HTMLButtonElement | null = null;
+  private searchNext: HTMLButtonElement | null = null;
   private searchDebounceTimer: number | null = null;
   private searchHandshakeTimer: number | null = null;
   private searchInput: HTMLInputElement | null = null;
@@ -176,9 +198,7 @@ export class HtmlPreviewView extends FileView {
   private viewMode: ViewMode = "preview";
   private viewToggleButton: HTMLButtonElement | null = null;
   private zoom = 100;
-  private zoomInButton: HTMLButtonElement | null = null;
   private zoomLabel: HTMLButtonElement | null = null;
-  private zoomOutButton: HTMLButtonElement | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -187,6 +207,10 @@ export class HtmlPreviewView extends FileView {
     super(leaf);
     this.reloadRegistrationId = plugin.createReloadRegistrationId();
   }
+
+  // Requests and expiry must survive moving a leaf and closing its old popout.
+  // Timer IDs are local to a window; never cancel them in the leaf's new owner.
+  private get timerWindow(): Window { return this.plugin.app.workspace.containerEl.win; }
 
   getViewType(): string {
     return HTML_PREVIEW_VIEW_TYPE;
@@ -197,12 +221,40 @@ export class HtmlPreviewView extends FileView {
   }
 
   override async onOpen(): Promise<void> {
+    this.unregisterPresentationSource = this.plugin.presenter.registerSource(this);
     this.unregisterAutoReloadListener = this.plugin.registerAutoReloadListener(() => this.updateToolbarState());
     this.unregisterScopeModeListener = this.plugin.registerScopeModeListener(change => (
       this.handleScopeModeChange(change)
     ));
-    this.registerDomEvent(this.contentEl.doc, "fullscreenchange", () => this.handleFullscreenChange());
-    this.registerDomEvent(this.contentEl.win, "message", event => this.handleSearchBridgeMessage(event));
+    // Only the window containing this preview can send its iframe handshake.
+    // Do not retain callbacks on unrelated popouts (including projection output).
+    this.bindWindowEvents(this.contentEl.win);
+    this.register(this.contentEl.onWindowMigrated(win => {
+      this.windowEventCleanup.forEach((cleanup, owner) => { if (owner !== win) cleanup(); });
+      this.bindWindowEvents(win);
+      // A candidate belongs to the window where it was verified. Do not promote
+      // its old port after the source has moved to another renderer.
+      this.cancelCandidateTransition();
+      if (this.diagnosticsRenderFrame) {
+        if (!this.diagnosticsRenderFrame.owner.closed) this.diagnosticsRenderFrame.owner.cancelAnimationFrame(this.diagnosticsRenderFrame.id);
+        this.diagnosticsRenderFrame = null;
+      }
+      // Chromium can leave an adopted iframe attached to its old, destroyed
+      // execution context. Recreate it in the destination document and restore
+      // the last verified page through a fresh, session-checked bridge.
+      if (this.activeIframe && this.iframeOwnerWindow !== win) this.renderIframe();
+      this.scheduleDiagnosticsRender();
+    }));
+    this.registerEvent(this.app.workspace.on("layout-change", () => this.updatePresentationControls()));
+    this.registerEvent(this.app.workspace.on("window-close", (_workspaceWindow, win) => {
+      // Its document has already been destroyed; drop references without calling
+      // DOM methods belonging to that closed renderer.
+      this.windowEventCleanup.delete(win);
+    }));
+    this.register(() => {
+      this.windowEventCleanup.forEach(cleanup => cleanup());
+      this.windowEventCleanup.clear();
+    });
     this.registerDomEvent(this.contentEl, "keydown", event => {
       if (isImeComposing(event)) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "f") {
@@ -212,7 +264,44 @@ export class HtmlPreviewView extends FileView {
     });
   }
 
+  private bindWindowEvents(win: Window): void {
+    if (this.windowEventCleanup.has(win)) return;
+    const doc = win.document;
+    const onMessage = (event: MessageEvent<unknown>): void => {
+      this.handleSearchBridgeMessage(event);
+      this.candidateWindowListeners.forEach(listener => listener(event));
+    };
+    const onFullscreenChange = (): void => {
+      if (this.contentEl.win === win) this.handleFullscreenChange();
+    };
+    const onKeydown = (event: KeyboardEvent): void => {
+      if (this.contentEl.win === win && !isImeComposing(event) && event.key === "Escape"
+        && isFullscreenTarget(this.getPreviewIframe(), win.document)) {
+        event.preventDefault();
+        void this.toggleFullscreen();
+      }
+    };
+    win.addEventListener("message", onMessage);
+    doc.addEventListener("fullscreenchange", onFullscreenChange);
+    doc.addEventListener("keydown", onKeydown);
+    const cleanup = (): void => {
+      this.windowEventCleanup.delete(win);
+      if (win.closed) return;
+      win.removeEventListener("message", onMessage);
+      doc.removeEventListener("fullscreenchange", onFullscreenChange);
+      doc.removeEventListener("keydown", onKeydown);
+      win.removeEventListener("pagehide", cleanup);
+    };
+    // pagehide still has a live document. workspace window-close is too late
+    // to release DOM callbacks safely through that renderer.
+    win.addEventListener("pagehide", cleanup, { once: true });
+    this.windowEventCleanup.set(win, cleanup);
+  }
+
   override async onLoadFile(file: TFile): Promise<void> {
+    this.approvedResourceFiles = [];
+    this.windowRestoreState = null;
+    this.deckState = null;
     this.confirmedScopePath = null;
     this.mode = "safe";
     this.modeOverride = null;
@@ -220,6 +309,7 @@ export class HtmlPreviewView extends FileView {
     this.zoom = 100;
     this.searchQuery = "";
     await this.loadPreview(file);
+    this.plugin.presenter.sourceChanged(this);
   }
 
   private async loadPreview(file: TFile, options: PreviewLoadOptions = {}): Promise<void> {
@@ -234,7 +324,7 @@ export class HtmlPreviewView extends FileView {
     const policyGeneration = this.previewPolicyGeneration;
     const analysisStartCheckpoint = this.plugin.getVaultChangeCheckpoint();
     const previousDependencies = this.plugin.getPreviewDependencies(this.reloadRegistrationId);
-    let requestedModeOverride = options.modeOverride ?? null;
+    const requestedModeOverride = options.modeOverride ?? null;
     let recoveryMode = requestedModeOverride ?? this.mode;
     this.confirmedScopePath = options.confirmedScopePath ?? null;
     const signal = this.loadAbortController!.signal;
@@ -274,35 +364,8 @@ export class HtmlPreviewView extends FileView {
     this.setStatus("正在分析页面需要的资源…", "loading");
 
     try {
-      let analysis = await analyzePreviewScope(this.plugin.vaultBasePath, file.path, { signal });
+      const analysis = await analyzePreviewScope(this.plugin.vaultBasePath, file.path, { signal });
       if (!loadIsCurrent()) return;
-
-      if (shouldConfirmScope(analysis.requiresConfirmation, this.confirmedScopePath, analysis.scopeRelativePath)) {
-        const modal = new ScopeConfirmationModal(this.app, analysis);
-        this.activeScopeModal = modal;
-        const decision = await modal.waitForDecision();
-        if (this.activeScopeModal === modal) this.activeScopeModal = null;
-        if (!loadIsCurrent()) return;
-        if (decision === "cancel") {
-          this.clearReloadRegistration();
-          this.confirmedScopePath = null;
-          const message = "你取消了较大资源范围，本次没有创建本地预览会话。";
-          this.setStatus(message, "error");
-          this.renderFatalError(
-            message,
-            createPreviewRecoveryOptions(recoveryMode, null)
-          );
-          return;
-        }
-        if (decision === "entry-folder-safe") {
-          analysis = applyEntryFolderSafeTrial(analysis);
-          requestedModeOverride = "safe";
-          recoveryMode = "safe";
-          this.confirmedScopePath = null;
-        } else {
-          this.confirmedScopePath = analysis.scopeRelativePath;
-        }
-      }
 
       const mode = resolvePreviewMode(
         this.plugin.getScopeMode(getHtmlPermissionScopePath(file.path)),
@@ -314,7 +377,9 @@ export class HtmlPreviewView extends FileView {
         enableSearchBridge: true,
         entryRelativePath: file.path,
         mode,
-        scopeRelativePath: analysis.scopeRelativePath
+        scopeRelativePath: getGrantedResourceScope(analysis.scopeRelativePath, this.approvedResourceFiles),
+        resourceFiles: analysis.dependencyRelativePaths,
+        approvedFiles: this.approvedResourceFiles
       });
       if (!loadIsCurrent()) {
         await this.plugin.previewServer.revokeSession(session.token);
@@ -369,11 +434,15 @@ export class HtmlPreviewView extends FileView {
   }
 
   override async onUnloadFile(_file: TFile): Promise<void> {
+    this.plugin.presenter.sourceStopped(this);
     this.cancelActiveLoad();
     await this.cleanupSession();
   }
 
   override async onClose(): Promise<void> {
+    this.searchPageMenu?.destroy();
+    this.unregisterPresentationSource?.();
+    this.unregisterPresentationSource = null;
     this.cancelActiveLoad();
     await this.cleanupSession();
     this.unregisterAutoReloadListener?.();
@@ -392,6 +461,75 @@ export class HtmlPreviewView extends FileView {
     void this.reloadWithCandidateSession(this.file, "manual");
   }
 
+  getProjectionElement(): HTMLIFrameElement | null {
+    return this.viewMode === "preview" && this.getLectureContext() ? this.getPreviewIframe() : null;
+  }
+
+  getPresentationContext(): PresentationContext | null {
+    const session = this.session, file = this.file;
+    if (!file || !session || this.iframeOwnerWindow !== this.contentEl.win || !this.getLectureContext()) return null;
+    const picture = !this.deckState || Boolean(this.deckState.adapter) || this.deckState.canNavigate === false || this.mode === "safe";
+    return {
+      filePath: file.path, fileName: file.name, sessionId: session.id,
+      documentRevision: this.documentRevision ?? "", scopeRelativePath: session.scopeRelativePath,
+      resourceFiles: session.resourceFiles, approvedFiles: session.approvedFiles, mode: this.mode, picture,
+      deck: this.deckState ?? { current: 1, pages: [{ hash: "", title: file.basename }], canNavigate: false }
+    };
+  }
+
+  getLectureContext(): LectureContext | null {
+    const file = this.file;
+    if (!file || !this.session || this.iframeOwnerWindow !== this.contentEl.win) return null;
+    // Large HTML has no search bridge. Its verified GET plus iframe load is
+    // sufficient for one-page notes and course-image projection, not navigation.
+    if (this.singlePageLectureFile === file) return { deck: { current: 1, pages: [{ title: file.basename }] } };
+    // Wait for the current document's report, so loading a deck cannot briefly
+    // expose page 1 of the previous file or a made-up navigation destination.
+    if (!this.searchBridgeReady || !this.documentRevision
+      || this.lastPageReadingState?.vaultRelativePath !== file.path) return null;
+    return { deck: this.deckState ?? { current: 1, pages: [{ title: file.basename }] } };
+  }
+
+  async capturePresentationContext(): Promise<PresentationContext | null> {
+    const file = this.file, session = this.session;
+    const mainWindow = this.plugin.app.workspace.containerEl.win;
+    const deadline = Date.now() + 1_500;
+    // The frame reconnects its bridge after load. A click during that short
+    // interval should wait for this same document, not silently lose the start.
+    do {
+      await this.captureLatestPageState();
+      if (this.file !== file || this.session !== session) return null;
+      const context = this.getPresentationContext();
+      if (context) return context;
+      // The main-window timer survives closing a source popout.
+      await new Promise<void>(resolve => mainWindow.setTimeout(resolve, 40));
+    } while (Date.now() < deadline);
+    return null;
+  }
+
+  goToPresentationPage(page: number): boolean {
+    const context = this.getPresentationContext();
+    const channel = this.session?.searchChannel;
+    if (!context || context.deck.canNavigate === false || !channel || !this.searchBridgePort || !isDeckPageNumber(page, context.deck.pages.length)) return false;
+    this.searchBridgePort.postMessage({ channel, type: "html-studio-deck-go", page });
+    return true;
+  }
+
+  updatePresentationControls(): void {
+    if (!this.projectionButton) return;
+    const projecting = this.plugin.presenter.output?.source === this;
+    const context = this.getPresentationContext();
+    this.projectionButton.disabled = !projecting && (this.viewMode === "source" || !context);
+    const label = projecting ? "结束投屏" : "投屏演示";
+    const text = this.projectionButton.querySelector("span:last-child");
+    text?.setText(label);
+    this.projectionButton.setAttribute("aria-label", label);
+    this.projectionButton.toggleClass("is-active", projecting);
+    this.projectionButton.title = projecting ? "结束投屏，本机保留当前课件页码和讲义"
+      : context ? "从当前页打开独立投屏窗口，本机保留课件和讲义" : "课件加载完成后即可投屏";
+    if (this.lectureButton) this.lectureButton.disabled = !this.file;
+  }
+
   private beginLoad(): number {
     this.loadGeneration += 1;
     this.deferredFullscreenReload = false;
@@ -400,8 +538,6 @@ export class HtmlPreviewView extends FileView {
     this.loadAbortController?.abort();
     this.cancelSourceRead();
     this.loadAbortController = new AbortController();
-    this.activeScopeModal?.cancel();
-    this.activeScopeModal = null;
     this.activeScopeExpansionModal?.cancel();
     this.activeScopeExpansionModal = null;
     this.activeBrowserModal?.cancel();
@@ -412,6 +548,8 @@ export class HtmlPreviewView extends FileView {
   }
 
   private cancelActiveLoad(): void {
+    this.activeMenu?.hide();
+    this.activeMenu = null;
     this.loadGeneration += 1;
     this.deferredFullscreenReload = false;
     this.deferredManualReload = false;
@@ -419,8 +557,6 @@ export class HtmlPreviewView extends FileView {
     this.loadAbortController?.abort();
     this.loadAbortController = null;
     this.cancelSourceRead();
-    this.activeScopeModal?.cancel();
-    this.activeScopeModal = null;
     this.activeScopeExpansionModal?.cancel();
     this.activeScopeExpansionModal = null;
     this.activeBrowserModal?.cancel();
@@ -435,48 +571,43 @@ export class HtmlPreviewView extends FileView {
 
   private renderShell(): void {
     const toolbar = this.contentEl.createDiv({ cls: "html-studio-toolbar" });
-    const left = toolbar.createDiv({ cls: "html-studio-toolbar-group" });
-    this.modeButton = left.createEl("button", { cls: "html-studio-mode-button" });
-    this.modeButton.addEventListener("click", () => this.openModeModal());
-
-    const scope = left.createDiv({ cls: "html-studio-scope-pill", text: "资源范围：分析中" });
-    scope.dataset.role = "scope";
-
-    this.autoReloadButton = left.createEl("button", { cls: "html-studio-auto-reload" });
-    this.autoReloadButton.addEventListener("click", () => {
-      void this.toggleAutoReload();
+    const tabs = toolbar.createDiv({ cls: "html-studio-view-tabs", attr: { "aria-label": "查看方式" } });
+    this.previewTabButton = this.createToolbarButton(tabs, "panels-top-left", "预览", () => {
+      if (this.viewMode !== "preview") void this.toggleViewMode();
     });
-
-    const right = toolbar.createDiv({ cls: "html-studio-toolbar-group html-studio-toolbar-actions" });
-    this.viewToggleButton = this.createToolbarButton(right, "code-2", "源码", () => {
-      void this.toggleViewMode();
+    this.previewTabButton.addClass("html-studio-preview-tab");
+    this.viewToggleButton = this.createToolbarButton(tabs, "code-2", "源码", () => {
+      if (this.viewMode !== "source") void this.toggleViewMode();
     });
     this.viewToggleButton.addClass("html-studio-view-toggle");
 
-    const zoomGroup = right.createDiv({ cls: "html-studio-zoom-group" });
-    this.zoomOutButton = this.createIconButton(zoomGroup, "minus", "缩小", () => this.changeZoom(-1));
-    this.zoomLabel = zoomGroup.createEl("button", { cls: "html-studio-zoom-label", text: `${this.zoom}%` });
-    this.zoomLabel.title = "回到 100%";
-    this.zoomLabel.addEventListener("click", () => this.resetZoom());
-    this.zoomInButton = this.createIconButton(zoomGroup, "plus", "放大", () => this.changeZoom(1));
-
+    const right = toolbar.createDiv({ cls: "html-studio-toolbar-actions" });
+    this.zoomLabel = this.createToolbarButton(right, "chevron-down", `${this.zoom}%`, () => {
+      if (this.zoomLabel) this.openZoomMenu(this.zoomLabel);
+    });
+    this.zoomLabel.addClass("html-studio-zoom-label");
     this.searchButton = this.createToolbarButton(right, "search", "查找", () => this.toggleSearch());
+    this.searchButton.addClass("html-studio-secondary-tool", "html-studio-icon-tool");
     this.searchButton.disabled = true;
-    this.createToolbarButton(right, "refresh-cw", "刷新", () => this.refreshPreview());
-    this.createToolbarButton(right, "external-link", "浏览器", () => {
-      void this.promptBrowserOpen();
-    });
-    this.fullscreenButton = this.createToolbarButton(right, "maximize-2", "全屏", () => {
-      void this.toggleFullscreen();
-    });
-    this.fullscreenButton.addClass("html-studio-fullscreen-button");
+    this.refreshButton = this.createToolbarButton(right, "refresh-cw", "刷新", () => this.refreshPreview());
+    this.refreshButton.addClass("html-studio-secondary-tool", "html-studio-icon-tool");
+    this.fullscreenButton = this.createToolbarButton(right, "maximize", "全屏", () => { void this.toggleFullscreen(); });
+    this.fullscreenButton.addClass("html-studio-fullscreen-button", "html-studio-icon-tool");
     this.fullscreenButton.disabled = true;
-    this.createToolbarButton(right, "locate-fixed", "源文件", () => {
-      void this.plugin.revealActiveFile();
+    this.lectureButton = this.createToolbarButton(right, "notebook-pen", "讲义", () => {
+      void this.plugin.presenter.showNotes(true, this);
     });
-    const diagnosticButton = this.createToolbarButton(right, "scan-search", "诊断", () => this.toggleDiagnostics());
-    diagnosticButton.addClass("html-studio-diagnostic-button");
-    this.diagnosticBadge = diagnosticButton.createSpan({ cls: "html-studio-diagnostic-badge" });
+    this.lectureButton.addClass("html-studio-icon-tool");
+    this.projectionButton = this.createToolbarButton(right, "presentation", "投屏演示", () => {
+      if (this.plugin.presenter.output?.source === this) this.plugin.presenter.stopProjection();
+      else void this.plugin.presenter.startProjection(this);
+    });
+    this.projectionButton.addClass("html-studio-projection-button");
+    this.projectionButton.disabled = true;
+    this.moreButton = this.createToolbarButton(right, "ellipsis", "更多选项", () => {
+      if (this.moreButton) this.openMoreMenu(this.moreButton);
+    });
+    this.moreButton.addClass("html-studio-more-button", "html-studio-icon-tool");
 
     this.renderSearchBar();
     this.statusEl = this.contentEl.createDiv({ cls: "html-studio-status" });
@@ -484,7 +615,7 @@ export class HtmlPreviewView extends FileView {
     this.statusEl.setAttribute("role", "status");
     const body = this.contentEl.createDiv({ cls: "html-studio-body" });
     this.iframeHost = body.createDiv({ cls: "html-studio-iframe-host" });
-    this.diagnosticsDrawer = body.createDiv({ cls: "html-studio-diagnostics is-open" });
+    this.diagnosticsDrawer = body.createDiv({ cls: "html-studio-diagnostics" });
   }
 
   private createIconButton(
@@ -502,6 +633,7 @@ export class HtmlPreviewView extends FileView {
   }
 
   private renderSearchBar(): void {
+    this.searchPageMenu?.destroy();
     const bar = this.contentEl.createDiv({ cls: "html-studio-search-bar" });
     this.searchBar = bar;
     bar.setAttribute("aria-hidden", "true");
@@ -538,11 +670,20 @@ export class HtmlPreviewView extends FileView {
       event.preventDefault();
       this.runSearch(event.shiftKey ? "previous" : "next");
     });
-    this.searchCount = bar.createSpan({ cls: "html-studio-search-count", text: "0 / 0" });
+    const results = bar.createDiv({ cls: "html-studio-search-results" });
+    const count = results.createEl("button", { cls: "html-studio-search-count", text: "0 / 0", attr: { "aria-haspopup": "listbox", "aria-expanded": "false" } });
+    count.disabled = true;
+    this.searchCount = count;
+    this.searchPageMenu = new PageMenu(results);
+    count.addEventListener("click", () => {
+      if (!this.deckState || !this.searchMatchPages.length) return;
+      this.searchPageMenu?.open(count, this.searchMatchPages.map(page => ({ page, title: this.deckState?.pages[page - 1]?.title ?? "" })), this.deckState.current,
+        page => this.runSearch("current", page));
+    });
     this.searchCount.setAttribute("aria-live", "polite");
-    this.searchCount.setAttribute("role", "status");
-    this.createIconButton(bar, "chevron-up", "上一处", () => this.runSearch("previous"));
-    this.createIconButton(bar, "chevron-down", "下一处", () => this.runSearch("next"));
+    this.searchPrevious = this.createIconButton(bar, "chevron-left", "上一处", () => this.runSearch("previous"));
+    this.searchNext = this.createIconButton(bar, "chevron-right", "下一处", () => this.runSearch("next"));
+    this.searchPrevious.disabled = this.searchNext.disabled = true;
     this.createIconButton(bar, "x", "关闭查找", () => this.closeSearch());
   }
 
@@ -565,12 +706,15 @@ export class HtmlPreviewView extends FileView {
     setIcon(icon, iconName);
     button.createSpan({ text: label });
     button.setAttribute("aria-label", label);
+    button.title = label;
     button.addEventListener("click", callback);
     return button;
   }
 
   private renderIframe(): void {
     if (!this.iframeHost || !this.session) return;
+    const pan = { left: this.previewCanvas?.scrollLeft ?? 0, top: this.previewCanvas?.scrollTop ?? 0 };
+    this.initialDocumentLoadTicket?.cancel();
     this.prepareReadingStateForReplacement();
     this.resetSearchBridge();
     this.releaseSourceContent();
@@ -587,10 +731,7 @@ export class HtmlPreviewView extends FileView {
     const sessionToken = this.session.token;
     this.activeIframe = iframe;
     this.bindActiveIframeLifecycle(iframe, sessionToken);
-    iframe.addEventListener("load", () => {
-      void this.verifyInitialIframeLoad(iframe, sessionToken);
-    }, { once: true });
-    const resourceScopePath = this.analysis?.scopeRelativePath ?? this.session.scopeRelativePath;
+    const resourceScopePath = this.session.scopeRelativePath;
     const restoreState = isReadingStateRestorable(
       resourceScopePath,
       this.activePageRestoreState
@@ -601,20 +742,32 @@ export class HtmlPreviewView extends FileView {
       resourceScopePath,
       restoreState
     ));
-    iframe.src = url.toString();
+    const ticket = this.plugin.previewServer.beginSessionDocumentLoad(sessionToken, url.toString());
+    this.initialDocumentLoadTicket = ticket;
+    const file = this.file;
+    iframe.addEventListener("load", () => {
+      void this.verifyInitialIframeLoad(iframe, sessionToken, ticket, file);
+    }, { once: true });
+    iframe.src = ticket.url;
     this.renderScriptRestrictionNotice();
     this.setStatus("正在打开 HTML 页面…", "loading");
     this.applyZoom();
     this.applyViewMode();
+    this.previewCanvas.scrollLeft = pan.left;
+    this.previewCanvas.scrollTop = pan.top;
     if (this.viewMode === "source") void this.loadSource();
     this.updateFullscreenButton();
     this.renderDiagnostics();
   }
 
   private bindActiveIframeLifecycle(iframe: HTMLIFrameElement, sessionToken: string): void {
+    this.iframeOwnerWindow = this.contentEl.win;
     iframe.addEventListener("load", () => {
       if (this.session?.token !== sessionToken || this.getPreviewIframe() !== iframe) return;
+      this.iframeLoadGeneration += 1;
+      const hadSinglePageLecture = Boolean(this.singlePageLectureFile);
       this.resetSearchBridge();
+      if (hadSinglePageLecture) this.plugin.presenter.sourceChanged(this);
       if (this.searchCount) this.searchCount.setText("当前页面不可用");
       this.setStatus("正在确认当前页面是否仍由本地预览保护…", "loading");
       this.updateSearchState();
@@ -622,7 +775,7 @@ export class HtmlPreviewView extends FileView {
         this.updatePreviewLoadedStatus();
         return;
       }
-      this.searchHandshakeTimer = this.contentEl.win.setTimeout(() => {
+      this.searchHandshakeTimer = this.timerWindow.setTimeout(() => {
         this.searchHandshakeTimer = null;
         if (this.session?.token !== sessionToken || this.getPreviewIframe() !== iframe || this.searchBridgeReady) {
           return;
@@ -634,13 +787,13 @@ export class HtmlPreviewView extends FileView {
     iframe.addEventListener("error", () => this.setStatus("页面容器加载失败，请打开诊断查看原因", "error"));
   }
 
-  private async verifyInitialIframeLoad(iframe: HTMLIFrameElement, sessionToken: string): Promise<void> {
-    const probe = await this.plugin.previewServer.probeSessionEntry(
-      sessionToken,
-      this.loadAbortController?.signal
-    );
-    if (probe.cancelled) return;
-    if (this.session?.token !== sessionToken || this.getPreviewIframe() !== iframe) return;
+  private async verifyInitialIframeLoad(iframe: HTMLIFrameElement, sessionToken: string, ticket: PreviewDocumentLoadTicket, file: TFile | null): Promise<void> {
+    const generation = this.iframeLoadGeneration;
+    const probe = await ticket.completion;
+    if (this.initialDocumentLoadTicket !== ticket || this.iframeLoadGeneration !== generation
+      || this.session?.token !== sessionToken || this.getPreviewIframe() !== iframe
+      || this.file !== file || this.iframeOwnerWindow !== this.contentEl.win) return;
+    this.initialDocumentLoadTicket = null;
     if (!probe.ok) {
       const message = toUserFacingPreviewError(new PreviewEntryProbeError(probe.statusCode), "page");
       this.setStatus(message, "error");
@@ -654,13 +807,16 @@ export class HtmlPreviewView extends FileView {
       this.scheduleDiagnosticsRender();
       return;
     }
+    if (!probe.searchBridgeAvailable && new URL(ticket.url).pathname === new URL(this.session.entryUrl).pathname) {
+      this.singlePageLectureFile = file;
+      this.plugin.presenter.sourceChanged(this);
+    }
     this.updatePreviewLoadedStatus();
     this.updateSearchState();
   }
 
   private async preparePreviewCandidate(
     session: PreviewSession,
-    analysis: ScopeAnalysis,
     mode: PreviewMode,
     parentSignal?: AbortSignal
   ): Promise<PreparedPreviewCandidate> {
@@ -682,7 +838,7 @@ export class HtmlPreviewView extends FileView {
       throw createCandidateAbortError();
     }
 
-    const resourceScopePath = analysis.scopeRelativePath;
+    const resourceScopePath = session.scopeRelativePath;
     const latestReadingState = this.lastPageReadingState ?? this.activePageRestoreState;
     const restoreState = isReadingStateRestorable(resourceScopePath, latestReadingState)
       ? latestReadingState
@@ -740,6 +896,8 @@ export class HtmlPreviewView extends FileView {
       if (!bridge.port || !restoreState || !readiness.canSendRestore) return;
       bridge.port.postMessage({
         channel: session.searchChannel,
+        hash: restoreState.hash,
+        page: restoreState.page,
         scrollX: restoreState.scrollX,
         scrollY: restoreState.scrollY,
         type: "html-studio-page-state-restore"
@@ -768,6 +926,7 @@ export class HtmlPreviewView extends FileView {
           !isSearchBridgeMessage(data)
           || data.channel !== session.searchChannel
           || data.type !== "html-studio-page-state-restored"
+          || (restoreState?.page !== undefined && data.page !== restoreState.page)
         ) return;
         readiness.markRestoreReady();
         checkReady();
@@ -779,6 +938,7 @@ export class HtmlPreviewView extends FileView {
     };
     let navigationStarted = false;
     let ticketReady = false;
+    let hasSearchBridge = false;
     const onLoad = (): void => {
       if (!navigationStarted || !ticketReady) return;
       readiness.markIframeLoaded();
@@ -787,11 +947,11 @@ export class HtmlPreviewView extends FileView {
     const onError = (): void => fail(new PreviewEntryProbeError(503));
     const onAbort = (): void => fail(createCandidateAbortError());
 
-    this.contentEl.win.addEventListener("message", onWindowMessage);
+    this.candidateWindowListeners.add(onWindowMessage);
     iframe.addEventListener("load", onLoad);
     iframe.addEventListener("error", onError, { once: true });
     controller.signal.addEventListener("abort", onAbort, { once: true });
-    timeout = this.contentEl.win.setTimeout(() => fail(new PreviewEntryProbeError(504)), 16_000);
+    timeout = this.timerWindow.setTimeout(() => fail(new PreviewEntryProbeError(504)), 16_000);
     this.iframeHost.append(host);
     this.candidateHost = host;
     navigationStarted = true;
@@ -802,7 +962,8 @@ export class HtmlPreviewView extends FileView {
         return;
       }
       ticketReady = true;
-      readiness.configureBridgeRequirement(Boolean(result.searchBridgeAvailable));
+      hasSearchBridge = Boolean(result.searchBridgeAvailable);
+      readiness.configureBridgeRequirement(hasSearchBridge);
       readiness.markTicketReady();
       sendRestore();
       checkReady();
@@ -814,6 +975,7 @@ export class HtmlPreviewView extends FileView {
         bridge.port.removeEventListener("message", bridge.listener);
       }
       return {
+        hasSearchBridge,
         diagnostics,
         dependencies,
         host,
@@ -835,8 +997,8 @@ export class HtmlPreviewView extends FileView {
       });
       throw error;
     } finally {
-      this.contentEl.win.clearTimeout(timeout);
-      this.contentEl.win.removeEventListener("message", onWindowMessage);
+      this.timerWindow.clearTimeout(timeout);
+      this.candidateWindowListeners.delete(onWindowMessage);
       iframe.removeEventListener("load", onLoad);
       iframe.removeEventListener("error", onError);
       controller.signal.removeEventListener("abort", onAbort);
@@ -847,6 +1009,9 @@ export class HtmlPreviewView extends FileView {
   }
 
   private promotePreviewCandidate(candidate: PreparedPreviewCandidate): void {
+    const pan = { left: this.previewCanvas?.scrollLeft ?? 0, top: this.previewCanvas?.scrollTop ?? 0 };
+    this.initialDocumentLoadTicket?.cancel();
+    this.initialDocumentLoadTicket = null;
     this.resetSearchBridge();
     if (this.viewMode === "source") this.prepareReadingStateForReplacement();
     this.releaseSourceContent();
@@ -877,9 +1042,17 @@ export class HtmlPreviewView extends FileView {
     }
     this.activePageRestoreState = null;
     this.lastPageReadingState = candidate.restoreState;
+    if (!candidate.hasSearchBridge
+      && new URL(candidate.iframe.src).pathname === new URL(candidate.session.entryUrl).pathname) {
+      this.singlePageLectureFile = this.file;
+      this.plugin.presenter.sourceChanged(this);
+    }
+    candidate.port?.postMessage({ channel: candidate.session.searchChannel, type: "html-studio-page-state-request" });
     this.renderScriptRestrictionNotice();
     this.applyZoom();
     this.applyViewMode();
+    this.previewCanvas.scrollLeft = pan.left;
+    this.previewCanvas.scrollTop = pan.top;
     if (this.viewMode === "source") {
       const normalizedSearchQuery = normalizeTextSearchQuery(this.searchQuery);
       const shouldResumeSearch = Boolean(
@@ -950,7 +1123,7 @@ export class HtmlPreviewView extends FileView {
         const finish = (error?: unknown): void => {
           if (settled) return;
           settled = true;
-          this.contentEl.win.clearTimeout(timeout);
+          this.timerWindow.clearTimeout(timeout);
           port.removeEventListener("message", onMessage);
           if (error) {
             reject(error instanceof Error ? error : new Error("Preview candidate state refresh failed"));
@@ -963,16 +1136,19 @@ export class HtmlPreviewView extends FileView {
             !isSearchBridgeMessage(data)
             || data.channel !== channel
             || data.type !== "html-studio-page-state-restored"
+            || (latestState.page !== undefined && data.page !== latestState.page)
           ) return;
           finish();
         };
-        const timeout = this.contentEl.win.setTimeout(
+        const timeout = this.timerWindow.setTimeout(
           () => finish(new PreviewEntryProbeError(504)),
           500
         );
         port.addEventListener("message", onMessage);
         port.postMessage({
           channel,
+          hash: latestState.hash,
+          page: latestState.page,
           scrollX: latestState.scrollX,
           scrollY: latestState.scrollY,
           type: "html-studio-page-state-restore"
@@ -1024,6 +1200,7 @@ export class HtmlPreviewView extends FileView {
   }
 
   private stopActivePreviewFailClosed(mode: PreviewMode, sessionToken: string): Promise<void> {
+    this.plugin.presenter.sourceStopped(this);
     this.cancelCandidateTransition();
     this.prepareReadingStateForReplacement();
     this.unregisterDiagnosticSink?.();
@@ -1052,34 +1229,14 @@ export class HtmlPreviewView extends FileView {
     setIcon(icon, "code-2");
     const copy = notice.createDiv({ cls: "html-studio-script-notice-copy" });
     copy.createEl("strong", { text: presentation.title });
-    copy.createSpan({
-      text: `${presentation.detail}切换后，常见后台请求和外部资源受阻，但 WebRTC 不作离线承诺。`
-    });
-    const switchButton = notice.createEl("button", { cls: "mod-cta", text: "本地交互打开" });
-    switchButton.addEventListener("click", () => {
-      void this.switchFromScriptNotice(switchButton, session.token, analysis);
-    });
-  }
-
-  private async switchFromScriptNotice(
-    button: HTMLButtonElement,
-    sessionToken: string,
-    analysis: ScopeAnalysis
-  ): Promise<void> {
-    button.disabled = true;
-    try {
-      const applied = await this.replacePreviewSessionMode("interactive", sessionToken, analysis);
-      if (!applied) new Notice("页面刚刚发生了刷新，请再点一次“本地交互”。");
-    } catch (error) {
-      console.error("[ZJ HTML Studio] Failed to enable local interaction", error);
-      new Notice(toUserFacingPreviewError(error, "page"));
-      if (button.isConnected) button.disabled = false;
-    }
+    copy.createSpan({ text: presentation.detail });
+    const switchButton = notice.createEl("button", { text: "恢复正常打开" });
+    switchButton.addEventListener("click", () => this.openModeModal("standard"));
   }
 
   private async toggleViewMode(): Promise<void> {
     if (this.viewMode === "source") {
-      this.prepareReadingStateForReplacement();
+      // The live iframe is only hidden, so its reading state remains current.
       this.viewMode = "preview";
       this.releaseSourceContent();
       this.applyViewMode();
@@ -1248,12 +1405,6 @@ export class HtmlPreviewView extends FileView {
     this.updateToolbarState();
   }
 
-  private resetZoom(): void {
-    this.zoom = 100;
-    this.applyZoom();
-    this.updateToolbarState();
-  }
-
   private applyZoom(): void {
     const iframe = this.getPreviewIframe();
     if (!iframe) return;
@@ -1262,6 +1413,16 @@ export class HtmlPreviewView extends FileView {
 
   private applyZoomToIframe(iframe: HTMLIFrameElement): void {
     const scale = this.zoom / 100;
+    let surface = iframe.parentElement;
+    if (!surface) return;
+    if (!surface.classList.contains("html-studio-preview-surface")) {
+      surface = surface.createDiv({ cls: "html-studio-preview-surface" });
+      surface.append(iframe);
+    }
+    // Grow the outer scrollable surface with the zoom. Its inverse iframe size
+    // keeps the authored viewport unchanged, so responsive decks cannot cancel
+    // the visual scale by fitting themselves to a smaller viewport.
+    surface.setCssProps({ "--html-studio-preview-zoom": String(scale) });
     iframe.setCssStyles({
       width: `${100 / scale}%`,
       height: `${100 / scale}%`,
@@ -1277,7 +1438,7 @@ export class HtmlPreviewView extends FileView {
   private openSearch(): void {
     if (this.viewMode === "preview") {
       if (!this.session?.searchChannel) {
-        new Notice(`这个 HTML 超过 ${MAX_SOURCE_VIEW_BYTES / (1024 * 1024)} MiB。为避免占用过多内存，页面查找没有启用。`);
+        new Notice("页面尚未准备好，请加载完成后重试。");
         return;
       }
       if (!this.searchBridgeReady) {
@@ -1294,6 +1455,7 @@ export class HtmlPreviewView extends FileView {
   }
 
   private closeSearch(): void {
+    this.searchPageMenu?.close();
     this.searchBar?.removeClass("is-open");
     this.searchBar?.setAttribute("aria-hidden", "true");
     this.searchBar?.setAttribute("inert", "");
@@ -1305,9 +1467,10 @@ export class HtmlPreviewView extends FileView {
     this.searchButton?.focus();
   }
 
-  private runSearch(direction: "current" | "next" | "previous"): void {
+  private runSearch(direction: "current" | "next" | "previous", targetPage?: number): void {
+    this.searchPageMenu?.close();
     if (this.searchDebounceTimer !== null) {
-      this.contentEl.win.clearTimeout(this.searchDebounceTimer);
+      this.timerWindow.clearTimeout(this.searchDebounceTimer);
       this.searchDebounceTimer = null;
     }
     if (this.viewMode === "source") {
@@ -1321,9 +1484,16 @@ export class HtmlPreviewView extends FileView {
       if (this.searchCount) this.searchCount.setText("准备中");
       return;
     }
+    // Async author navigation must finish restoring before search may navigate.
+    // Keep only the latest request, including clearing or closing the search.
+    if (this.activePageRestoreState) {
+      this.deferredPreviewSearch = { direction, targetPage };
+      return;
+    }
     port.postMessage({
       channel,
       direction,
+      targetPage,
       query: normalizeTextSearchQuery(this.searchQuery),
       requestId: ++this.searchRequestId,
       type: "html-studio-search"
@@ -1332,7 +1502,7 @@ export class HtmlPreviewView extends FileView {
 
   private scheduleSearch(): void {
     this.clearSearchDebounce();
-    this.searchDebounceTimer = this.contentEl.win.setTimeout(() => {
+    this.searchDebounceTimer = this.timerWindow.setTimeout(() => {
       this.searchDebounceTimer = null;
       this.runSearch("current");
     }, 180);
@@ -1340,7 +1510,7 @@ export class HtmlPreviewView extends FileView {
 
   private clearSearchDebounce(): void {
     if (this.searchDebounceTimer === null) return;
-    this.contentEl.win.clearTimeout(this.searchDebounceTimer);
+    this.timerWindow.clearTimeout(this.searchDebounceTimer);
     this.searchDebounceTimer = null;
   }
 
@@ -1390,6 +1560,21 @@ export class HtmlPreviewView extends FileView {
     ) return;
     const port = event.ports[0];
     if (!port) return;
+    if (this.iframeOwnerWindow !== this.contentEl.win) {
+      this.iframeOwnerWindow = this.contentEl.win;
+      // Adopting an iframe reloads its src attribute, which may predate in-page
+      // navigation. Restore the last verified location instead of restarting at 1.
+      const state = this.lastPageReadingState;
+      if (isReadingStateRestorable(session.scopeRelativePath, state)) {
+        this.windowRestoreState = state;
+        const target = new URL(buildReadingStateUrl(session.entryUrl, session.scopeRelativePath, state));
+        const previous = new URL(iframe.src);
+        // A hash-only change must go through the bridge: assigning iframe.src
+        // also fires an outer load event and would invalidate the live channel.
+        if (target.pathname !== previous.pathname || target.search !== previous.search) iframe.src = target.toString();
+      }
+    }
+    if (this.windowRestoreState) this.activePageRestoreState = this.windowRestoreState;
     this.resetSearchBridge();
     this.searchBridgePort = port;
     this.searchBridgeReady = true;
@@ -1403,6 +1588,8 @@ export class HtmlPreviewView extends FileView {
     if (this.activePageRestoreState) {
       port.postMessage({
         channel,
+        hash: this.activePageRestoreState.hash,
+        page: this.activePageRestoreState.page,
         scrollX: this.activePageRestoreState.scrollX,
         scrollY: this.activePageRestoreState.scrollY,
         type: "html-studio-page-state-restore"
@@ -1425,7 +1612,12 @@ export class HtmlPreviewView extends FileView {
       || value.channel !== channel
     ) return;
     const data = value;
+    if (data.type === "html-studio-fullscreen-exit") {
+      if (isFullscreenTarget(this.getPreviewIframe(), this.contentEl.doc)) void this.toggleFullscreen();
+      return;
+    }
     if (data.type === "html-studio-search-leaving") {
+      this.plugin.presenter.sourceStopped(this);
       this.resetSearchBridge();
       if (this.searchCount) this.searchCount.setText("当前页面不可用");
       this.setStatus("页面正在离开本地文档；查找词不会发送到新页面。", "loading");
@@ -1436,15 +1628,32 @@ export class HtmlPreviewView extends FileView {
       data.type === "html-studio-page-state"
       || data.type === "html-studio-page-state-restored"
     ) {
-      if (data.type === "html-studio-page-state" && this.activePageRestoreState) return;
-      const state = parseBridgePageState(this.analysis?.scopeRelativePath ?? "", data);
+      if (data.type === "html-studio-page-state" && this.activePageRestoreState && !this.windowRestoreState) return;
+      const state = parseBridgePageState(this.session?.scopeRelativePath ?? "", data);
       if (!state) return;
+      const deck = state.vaultRelativePath === this.file?.path ? parseDeckState(data.deck) : null;
+      if (this.windowRestoreState) {
+        const expected = this.windowRestoreState;
+        if (!isSameReadingLocation(state, expected)
+          || (deck?.pages.some(page => page.hash === expected.hash) && deck.pages[deck.current - 1]?.hash !== expected.hash)) return;
+        this.windowRestoreState = null;
+        this.activePageRestoreState = null;
+      }
       this.lastPageReadingState = state;
+      this.deckState = deck;
+      this.documentRevision = typeof data.documentRevision === "string" && /^[a-f0-9]{64}$/.test(data.documentRevision)
+        ? data.documentRevision : null;
       this.readingStateRevision += 1;
       this.readingStateWaiters.forEach(resolve => resolve());
       this.readingStateWaiters.clear();
       if (data.type === "html-studio-page-state-restored") {
         this.activePageRestoreState = null;
+      }
+      this.plugin.presenter.sourceChanged(this);
+      if (!this.activePageRestoreState && this.deferredPreviewSearch) {
+        const request = this.deferredPreviewSearch;
+        this.deferredPreviewSearch = null;
+        if (this.viewMode === "preview") this.runSearch(request.direction, request.targetPage);
       }
       return;
     }
@@ -1457,14 +1666,39 @@ export class HtmlPreviewView extends FileView {
       && data.requestId === this.searchRequestId
       && data.query === normalizeTextSearchQuery(this.searchQuery)
     ) {
+      this.searchMatchPages = data.searchDeck && this.deckState && Array.isArray(data.matchPages)
+        ? [...new Set(data.matchPages.filter(page => Number.isSafeInteger(page) && page >= 1 && page <= this.deckState!.pages.length))].slice(0, 500) : [];
+      const deckSearch = Boolean(data.searchDeck);
+      const navigable = deckSearch ? this.searchMatchPages.length : normalizeSearchResultNumber(data.total);
+      for (const [button, label] of [[this.searchPrevious, deckSearch ? "上一个命中页" : "上一处"], [this.searchNext, deckSearch ? "下一个命中页" : "下一处"]] as const) {
+        if (button) { button.disabled = navigable <= 1 && (deckSearch || data.countReliable !== false || !data.found); button.title = label; button.setAttribute("aria-label", label); }
+      }
+      if (this.searchCount) this.searchCount.disabled = !this.searchMatchPages.length;
+      if (deckSearch) {
+        const pages = this.searchMatchPages;
+        const position = pages.indexOf((data.found ? data.page : this.deckState?.current) ?? 0) + 1;
+        this.setSearchCountText(data.navigationFailed ? `找到 ${pages.length} 页 · 点击跳转` : pages.length ? `${position || "—"} / ${pages.length} 页` : "没有找到",
+          data.navigationFailed ? "课件尚未完成翻页，点击结果列表重试。"
+            :
+          data.truncatedReason === "unloaded-pages" ? "部分页面尚未加载，目前只查找已加载的文字。" : data.truncatedReason ? "结果较多，目前只列出已找到的页面；可输入更具体的关键词。"
+            : pages.length ? `找到 ${pages.length} 页，点击选择页面；搜索已加载的文字，不包含图片里的文字。` : "整份课件中没有找到这段文字。");
+        return;
+      }
       if (data.searchLimited) {
+        if (data.searchInvalidated) {
+          this.setSearchCountText("未完成查找", "页面内容过多或变化较快，请稍后重试；当前结果不代表没有匹配。");
+          return;
+        }
+        if (data.truncatedReason === "document-size") {
+          this.setSearchCountText("大文件暂不支持查找", "页面超出当前预览容量，请刷新后重试。");
+          return;
+        }
         const current = normalizeSearchResultNumber(data.current);
         const total = normalizeSearchResultNumber(data.total);
         this.setSearchCountText(
           data.found
-            ? `已定位${total > 0 ? ` ${current} / ${total}` : ""} · 部分受限`
-            : "未找到 · 部分受限",
-          "页面包含复杂结构或插件无法安全遍历的动态区域；为保持 Obsidian 流畅，没有执行无上限的同步查找"
+            ? `${current} / ${total}` : data.truncatedReason ? "请缩小查找范围" : "没有找到",
+          data.truncatedReason ? "页面内容较多，请输入更具体的关键词。" : "查找已加载的可见文字，不包含图片中的文字。"
         );
         return;
       }
@@ -1499,6 +1733,10 @@ export class HtmlPreviewView extends FileView {
   }
 
   private resetSearchBridge(): void {
+    this.deferredPreviewSearch = null;
+    this.singlePageLectureFile = null;
+    this.deckState = null;
+    this.documentRevision = null;
     this.searchRequestId += 1;
     this.readingStateWaiters.forEach(resolve => resolve());
     this.readingStateWaiters.clear();
@@ -1506,20 +1744,26 @@ export class HtmlPreviewView extends FileView {
     this.searchBridgePort?.close();
     this.searchBridgePort = null;
     if (this.searchDebounceTimer !== null) {
-      this.contentEl.win.clearTimeout(this.searchDebounceTimer);
+      this.timerWindow.clearTimeout(this.searchDebounceTimer);
       this.searchDebounceTimer = null;
     }
     if (this.searchHandshakeTimer !== null) {
-      this.contentEl.win.clearTimeout(this.searchHandshakeTimer);
+      this.timerWindow.clearTimeout(this.searchHandshakeTimer);
       this.searchHandshakeTimer = null;
     }
+    this.updatePresentationControls();
   }
 
   private updateSearchCount(current: number, total: number): void {
+    this.searchMatchPages = [];
+    if (this.searchCount) this.searchCount.disabled = true;
+    if (this.searchPrevious) this.searchPrevious.disabled = total <= 1;
+    if (this.searchNext) this.searchNext.disabled = total <= 1;
     this.setSearchCountText(`${current} / ${total}`);
   }
 
   private async captureLatestPageState(): Promise<void> {
+    if (this.iframeOwnerWindow !== this.contentEl.win) return;
     const port = this.searchBridgePort;
     const channel = this.session?.searchChannel;
     if (!port || !channel || !this.searchBridgeReady) return;
@@ -1529,10 +1773,10 @@ export class HtmlPreviewView extends FileView {
         if (settled) return;
         settled = true;
         this.readingStateWaiters.delete(finish);
-        this.contentEl.win.clearTimeout(timeout);
+        this.timerWindow.clearTimeout(timeout);
         resolve();
       };
-      const timeout = this.contentEl.win.setTimeout(finish, 80);
+      const timeout = this.timerWindow.setTimeout(finish, 80);
       this.readingStateWaiters.add(finish);
       port.postMessage({ channel, type: "html-studio-page-state-request" });
     });
@@ -1540,7 +1784,11 @@ export class HtmlPreviewView extends FileView {
 
   private setSearchCountText(text: string, title = ""): void {
     if (!this.searchCount) return;
-    this.searchCount.setText(text);
+    this.searchCount.empty();
+    this.searchCount.createSpan({ text });
+    if (this.searchMatchPages.length) {
+      setIcon(this.searchCount.createSpan({ cls: "html-studio-dropdown-icon", attr: { "aria-hidden": "true" } }), "chevron-down");
+    }
     this.searchCount.title = title;
     this.searchCount.setAttribute("aria-label", title ? `${text}。${title}` : text);
   }
@@ -1681,18 +1929,20 @@ export class HtmlPreviewView extends FileView {
 
   private renderDiagnostics(): void {
     if (this.diagnosticsRenderFrame !== null) {
-      this.contentEl.win.cancelAnimationFrame(this.diagnosticsRenderFrame);
+      if (!this.diagnosticsRenderFrame.owner.closed) this.diagnosticsRenderFrame.owner.cancelAnimationFrame(this.diagnosticsRenderFrame.id);
       this.diagnosticsRenderFrame = null;
     }
     if (!this.diagnosticsDrawer) return;
     const drawer = this.diagnosticsDrawer;
+    const scrollTop = drawer.querySelector<HTMLElement>(".html-studio-diagnostics-body")?.scrollTop ?? 0;
     drawer.empty();
 
     const visibleCount = this.diagnostics.length;
     const totalCount = visibleCount + this.suppressedDiagnostics;
     const header = drawer.createDiv({ cls: "html-studio-diagnostics-header" });
-    header.createEl("strong", { text: "页面诊断" });
-    header.createSpan({
+    const heading = header.createDiv({ cls: "html-studio-diagnostics-heading" });
+    heading.createEl("strong", { text: "页面信息与问题" });
+    heading.createSpan({
       cls: "html-studio-diagnostics-count",
       text: totalCount === 0
         ? "没有提醒"
@@ -1700,25 +1950,36 @@ export class HtmlPreviewView extends FileView {
           ? `${visibleCount} 条可见，${this.suppressedDiagnostics} 条已折叠`
           : `${visibleCount} 个提醒`
     });
-    const close = header.createEl("button", { text: "×", cls: "html-studio-diagnostics-close" });
-    close.addEventListener("click", () => drawer.removeClass("is-open"));
+    const close = header.createEl("button", { cls: "clickable-icon html-studio-diagnostics-close", attr: { "aria-label": "关闭页面信息", title: "关闭页面信息" } });
+    setIcon(close, "x");
+    close.addEventListener("click", () => { drawer.removeClass("is-open"); this.moreButton?.focus(); });
+    const body = drawer.createDiv({ cls: "html-studio-diagnostics-body", attr: { tabindex: "0", role: "region", "aria-label": "页面问题详情" } });
 
-    const health = drawer.createDiv({ cls: "html-studio-health" });
+    if (this.analysis) {
+      const info = body.createDiv({ cls: "html-studio-page-info" });
+      info.createEl("p", { text: this.file?.name ?? "当前页面", cls: "html-studio-page-info-name" });
+      renderResourceScope(info, this.analysis.scopeRelativePath);
+      const permission = info.createEl("button", { text: "查看页面权限", cls: "html-studio-text-action" });
+      permission.addEventListener("click", () => this.openModeModal());
+    }
+    const health = body.createDiv({ cls: "html-studio-health" });
     const healthIcon = health.createSpan();
     const primaryError = this.diagnostics.find(diagnostic => diagnostic.level === "error");
-    setIcon(healthIcon, primaryError ? "octagon-alert" : "circle-check");
+    health.toggleClass("is-error", Boolean(primaryError));
+    health.toggleClass("is-warning", !primaryError && totalCount > 0);
+    setIcon(healthIcon, primaryError ? "octagon-alert" : totalCount ? "info" : "circle-check");
     const healthCopy = health.createDiv();
     healthCopy.createEl("strong", {
       text: primaryError
         ? `预览遇到需要处理的问题：${primaryError.title}`
-        : this.session ? "本地隔离服务运行正常" : "正在准备本地服务"
+        : totalCount ? "部分内容可能未完整显示" : this.session ? "页面已就绪" : "正在准备页面"
     });
     healthCopy.createSpan({ text: "诊断只记录路径和原因，不保存页面正文。" });
 
     if (visibleCount === 0) {
-      drawer.createDiv({ cls: "html-studio-empty-diagnostics", text: "当前没有发现资源问题。" });
+      body.createDiv({ cls: "html-studio-empty-diagnostics", text: "当前没有发现资源问题。" });
     } else {
-      this.diagnostics.forEach(diagnostic => this.renderDiagnosticCard(drawer, diagnostic));
+      this.diagnostics.forEach(diagnostic => this.renderDiagnosticCard(body, diagnostic));
     }
 
     drawer.createDiv({
@@ -1727,19 +1988,22 @@ export class HtmlPreviewView extends FileView {
         ? `为保护 Obsidian 性能，最多绘制 ${MAX_DISPLAY_DIAGNOSTICS} 条诊断，其余已合并计数。`
         : "关闭最后一个 HTML 预览后，本地服务会自动停止。"
     });
+    body.scrollTop = scrollTop;
 
-    if (this.diagnosticBadge) {
-      this.diagnosticBadge.setText(totalCount > MAX_DISPLAY_DIAGNOSTICS ? `${MAX_DISPLAY_DIAGNOSTICS}+` : totalCount.toString());
-      this.diagnosticBadge.toggleClass("is-hidden", totalCount === 0);
+    if (this.moreButton) {
+      this.moreButton.toggleClass("has-issues", totalCount > 0);
+      this.moreButton.title = totalCount > 0 ? `更多选项 · ${totalCount} 个页面问题` : "更多选项";
     }
   }
 
   private scheduleDiagnosticsRender(): void {
     if (this.diagnosticsRenderFrame !== null) return;
-    this.diagnosticsRenderFrame = this.contentEl.win.requestAnimationFrame(() => {
+    const owner = this.contentEl.win;
+    const id = owner.requestAnimationFrame(() => {
       this.diagnosticsRenderFrame = null;
       this.renderDiagnostics();
     });
+    this.diagnosticsRenderFrame = { owner, id };
   }
 
   private renderDiagnosticCard(parent: HTMLElement, diagnostic: DisplayDiagnostic): void {
@@ -1750,25 +2014,31 @@ export class HtmlPreviewView extends FileView {
     title.createEl("strong", { text: diagnostic.title });
 
     const body = card.createDiv({ cls: "html-studio-diagnostic-content" });
-    if (diagnostic.requestedPath) this.renderPathField(body, "页面请求", diagnostic.requestedPath);
-    if (diagnostic.resolvedPath) this.renderPathField(body, "实际寻找", this.toVaultFriendlyPath(diagnostic.resolvedPath));
+    const resolvedPath = diagnostic.resolvedPath ? this.toVaultFriendlyPath(diagnostic.resolvedPath) : null;
+    if (diagnostic.requestedPath && diagnostic.requestedPath === resolvedPath) {
+      this.renderPathField(body, "资源位置", resolvedPath);
+    } else {
+      if (diagnostic.requestedPath) this.renderPathField(body, "页面请求", formatDiagnosticRequestPath(diagnostic.requestedPath), diagnostic.requestedPath);
+      if (resolvedPath) this.renderPathField(body, "实际寻找", resolvedPath);
+    }
     if (diagnostic.detail) body.createEl("p", { text: diagnostic.detail });
 
     const actions = body.createDiv({ cls: "html-studio-diagnostic-actions" });
     if (diagnostic.scopeExpansionCandidatePath) {
-      const expand = actions.createEl("button", { text: "检查可恢复范围" });
+      const expand = actions.createEl("button", { text: "允许读取此文件…" });
       expand.addEventListener("click", () => void this.expandScopeForDiagnostic(diagnostic, expand));
     }
-    const locate = actions.createEl("button", { text: "定位源文件", cls: "mod-cta" });
+    const locate = actions.createEl("button", { text: "定位源文件" });
     locate.addEventListener("click", () => void this.plugin.revealActiveFile());
     const retry = actions.createEl("button", { text: "刷新重试" });
     retry.addEventListener("click", () => this.refreshPreview());
   }
 
-  private renderPathField(parent: HTMLElement, label: string, value: string): void {
+  private renderPathField(parent: HTMLElement, label: string, value: string, originalValue?: string): void {
     const field = parent.createDiv({ cls: "html-studio-path-field" });
     field.createSpan({ text: label });
-    field.createEl("code", { text: value });
+    const code = field.createEl("code", { text: value });
+    if (originalValue && originalValue !== value) code.title = originalValue;
   }
 
   private addRuntimeDiagnostic(diagnostic: PreviewDiagnostic): void {
@@ -1803,6 +2073,7 @@ export class HtmlPreviewView extends FileView {
 
     const previousToken = previousSession.token;
     const generation = this.loadGeneration;
+    const policyGeneration = this.previewPolicyGeneration;
     let candidate: PreviewSession | null = null;
     let prepared: PreparedPreviewCandidate | null = null;
     button.disabled = true;
@@ -1810,12 +2081,13 @@ export class HtmlPreviewView extends FileView {
       const suggestion = await this.plugin.previewServer.suggestScopeExpansion(previousToken, resolvedPath);
       if (
         generation !== this.loadGeneration
+        || policyGeneration !== this.previewPolicyGeneration
         || this.session?.token !== previousToken
         || this.analysis !== previousAnalysis
         || this.file?.path !== file.path
       ) return;
       if (!suggestion) {
-        new Notice("目标文件已不存在、已变化或不在知识仓库内，因此没有提供扩大范围授权。");
+        new Notice("这个文件不存在、已变化，或属于不能向页面开放的配置文件。");
         return;
       }
 
@@ -1832,11 +2104,12 @@ export class HtmlPreviewView extends FileView {
       if (!approved) return;
       if (
         generation !== this.loadGeneration
+        || policyGeneration !== this.previewPolicyGeneration
         || this.session?.token !== previousToken
         || this.analysis !== previousAnalysis
         || this.file?.path !== file.path
       ) {
-        new Notice("页面状态已经变化，本次扩大范围没有应用。请从最新诊断重新确认。");
+        new Notice("页面已经变化，本次文件授权没有应用。");
         return;
       }
 
@@ -1844,17 +2117,10 @@ export class HtmlPreviewView extends FileView {
         enableSearchBridge: true,
         entryRelativePath: file.path,
         mode: this.mode,
-        scopeRelativePath: suggestion.scopeRelativePath
+        scopeRelativePath: suggestion.scopeRelativePath,
+        resourceFiles: previousAnalysis.dependencyRelativePaths,
+        approvedFiles: [...this.approvedResourceFiles, suggestion.targetRelativePath]
       });
-      const nextAnalysis: ScopeAnalysis = {
-        ...previousAnalysis,
-        dependencyRelativePaths: [...new Set([
-          ...previousAnalysis.dependencyRelativePaths,
-          suggestion.targetRelativePath
-        ])],
-        requiresConfirmation: false,
-        scopeRelativePath: suggestion.scopeRelativePath
-      };
       const probe = await this.probeCandidateSession(candidate.token);
       if (probe.cancelled) {
         await this.plugin.previewServer.revokeSession(candidate.token);
@@ -1862,9 +2128,10 @@ export class HtmlPreviewView extends FileView {
         return;
       }
       if (!probe.ok) throw new PreviewEntryProbeError(probe.statusCode);
-      prepared = await this.preparePreviewCandidate(candidate, nextAnalysis, this.mode);
+      prepared = await this.preparePreviewCandidate(candidate, this.mode);
       if (
         generation !== this.loadGeneration
+        || policyGeneration !== this.previewPolicyGeneration
         || this.session?.token !== previousToken
         || this.analysis !== previousAnalysis
         || this.file?.path !== file.path
@@ -1877,6 +2144,7 @@ export class HtmlPreviewView extends FileView {
       await this.refreshCandidateReadingState(prepared);
       if (
         generation !== this.loadGeneration
+        || policyGeneration !== this.previewPolicyGeneration
         || this.session?.token !== previousToken
         || this.analysis !== previousAnalysis
         || this.file?.path !== file.path
@@ -1889,18 +2157,18 @@ export class HtmlPreviewView extends FileView {
 
       this.unregisterDiagnosticSink?.();
       this.unregisterDiagnosticSink = null;
-      this.analysis = nextAnalysis;
+      this.approvedResourceFiles = [...new Set([...this.approvedResourceFiles, suggestion.targetRelativePath])];
       this.confirmedScopePath = suggestion.scopeRelativePath;
-      const initialDiagnostics = buildAnalysisDiagnostics(nextAnalysis, MAX_DISPLAY_DIAGNOSTICS, this.mode);
+      const initialDiagnostics = buildAnalysisDiagnostics(previousAnalysis, MAX_DISPLAY_DIAGNOSTICS, this.mode);
       this.diagnostics = initialDiagnostics;
       this.suppressedDiagnostics = Math.max(
         0,
-        countAnalysisDiagnostics(nextAnalysis, this.mode) - initialDiagnostics.length
+        countAnalysisDiagnostics(previousAnalysis, this.mode) - initialDiagnostics.length
       );
       this.session = candidate;
       candidate = null;
       this.updateReloadRegistration(this.session.id, [
-        ...nextAnalysis.dependencyRelativePaths,
+        ...previousAnalysis.dependencyRelativePaths,
         ...prepared.dependencies
       ]);
       this.promotePreviewCandidate(prepared);
@@ -1908,7 +2176,7 @@ export class HtmlPreviewView extends FileView {
       await this.plugin.previewServer.revokeSession(previousToken).catch(error => {
         console.error("[ZJ HTML Studio] Failed to retire previous scoped session", error);
       });
-      new Notice("资源范围已仅为当前标签临时扩大；文件夹权限没有改变。");
+      new Notice("已允许当前课件读取这个文件。");
     } catch (error) {
       if (prepared) {
         await this.discardPreviewCandidate(prepared);
@@ -1922,7 +2190,7 @@ export class HtmlPreviewView extends FileView {
       }
       if (generation !== this.loadGeneration || isAbortError(error)) return;
       console.error("[ZJ HTML Studio] Scope expansion failed", error);
-      new Notice(`${toUserFacingPreviewError(error, "page")} 当前页面仍保持原来的资源范围。`);
+      new Notice(`${toUserFacingPreviewError(error, "page")} 当前页面的文件访问没有改变。`);
     } finally {
       if (button.isConnected) button.disabled = false;
     }
@@ -1956,7 +2224,7 @@ export class HtmlPreviewView extends FileView {
     this.diagnosticsDrawer.toggleClass("is-open", !this.diagnosticsDrawer.hasClass("is-open"));
   }
 
-  private openModeModal(): void {
+  private openModeModal(requestMode?: "standard" | "trusted"): void {
     const analysis = this.analysis;
     const session = this.session;
     const permissionScopePath = this.permissionScopePath;
@@ -1965,6 +2233,7 @@ export class HtmlPreviewView extends FileView {
     this.activeModeModal?.cancel();
     const modal = new TrustModeModal(this.app, {
       currentMode: this.mode,
+      requestMode,
       permissionScopePath,
       resourceScopePath: analysis.scopeRelativePath,
       onChoose: async (mode, remember) => {
@@ -1996,14 +2265,15 @@ export class HtmlPreviewView extends FileView {
     mode: PreviewMode,
     previousToken: string,
     analysis: ScopeAnalysis,
-    nextModeOverride: PreviewMode | null = mode
+    nextModeOverride: PreviewMode | null = mode,
+    forceRevoke = false
   ): Promise<boolean> {
     const file = this.file;
     const generation = this.loadGeneration;
     const policyGeneration = this.previewPolicyGeneration;
     if (!file || this.session?.token !== previousToken) return false;
     const previousMode = this.mode;
-    const downgrade = isPreviewModeDowngrade(previousMode, mode);
+    const downgrade = forceRevoke || isPreviewModeDowngrade(previousMode, mode);
     const transitionIsCurrent = (): boolean => (
       generation === this.loadGeneration
       && policyGeneration === this.previewPolicyGeneration
@@ -2024,7 +2294,9 @@ export class HtmlPreviewView extends FileView {
         enableSearchBridge: true,
         entryRelativePath: file.path,
         mode,
-        scopeRelativePath: analysis.scopeRelativePath
+        scopeRelativePath: getGrantedResourceScope(analysis.scopeRelativePath, this.approvedResourceFiles),
+        resourceFiles: analysis.dependencyRelativePaths,
+        approvedFiles: this.approvedResourceFiles
       });
       const probe = await this.probeCandidateSession(nextSession.token);
       if (probe.cancelled) {
@@ -2041,7 +2313,7 @@ export class HtmlPreviewView extends FileView {
         await this.plugin.previewServer.revokeSession(nextSession.token);
         return false;
       }
-      prepared = await this.preparePreviewCandidate(nextSession, analysis, mode);
+      prepared = await this.preparePreviewCandidate(nextSession, mode);
       if (!downgrade && transitionIsCurrent() && this.session?.token === previousToken) {
         await this.refreshCandidateReadingState(prepared);
       }
@@ -2102,6 +2374,10 @@ export class HtmlPreviewView extends FileView {
 
   private async handleScopeModeChange(change: ScopeModeChange): Promise<void> {
     const policyGeneration = ++this.previewPolicyGeneration;
+    const resetFileGrants = change.forceSafeReset && this.approvedResourceFiles.length > 0;
+    if (change.forceSafeReset) this.approvedResourceFiles = [];
+    this.activeScopeExpansionModal?.cancel();
+    this.activeScopeExpansionModal = null;
     this.cancelCandidateTransition();
     const browserCleanup = change.forceSafeReset
       ? this.revokeAllBrowserSessions()
@@ -2146,7 +2422,7 @@ export class HtmlPreviewView extends FileView {
       return;
     }
     const nextMode = this.plugin.getScopeMode(permissionScopePath);
-    const action = decideScopeModeChange({
+    const action = resetFileGrants ? "downgrade" : decideScopeModeChange({
       currentMode: this.mode,
       forceSafeReset: change.forceSafeReset,
       modeOverride: this.modeOverride,
@@ -2169,7 +2445,7 @@ export class HtmlPreviewView extends FileView {
 
     this.activeModeModal?.cancel();
     this.activeModeModal = null;
-    const switching = this.replacePreviewSessionMode(nextMode, session.token, analysis, null);
+    const switching = this.replacePreviewSessionMode(nextMode, session.token, analysis, null, resetFileGrants);
     if (change.forceSafeReset) {
       await switching;
       await browserCleanup;
@@ -2184,7 +2460,7 @@ export class HtmlPreviewView extends FileView {
     this.browserSessionProbeAbortController = null;
     const sessions = [...this.browserSessions.entries()];
     this.browserSessions.clear();
-    sessions.forEach(([, timer]) => this.contentEl.win.clearTimeout(timer));
+    sessions.forEach(([, timer]) => this.timerWindow.clearTimeout(timer));
     const results = await Promise.allSettled(
       sessions.map(([token]) => this.plugin.previewServer.revokeSession(token))
     );
@@ -2200,7 +2476,7 @@ export class HtmlPreviewView extends FileView {
     if (!analysis || !this.file || !this.session) return;
     if (!this.ensureBrowserSessionCapacity()) return;
     this.activeBrowserModal?.cancel();
-    const modal = new BrowserOpenModal(this.app, analysis.scopeRelativePath);
+    const modal = new BrowserOpenModal(this.app, analysis.scopeRelativePath, this.mode);
     this.activeBrowserModal = modal;
     const mode = await modal.waitForMode();
     if (this.activeBrowserModal === modal) this.activeBrowserModal = null;
@@ -2222,7 +2498,9 @@ export class HtmlPreviewView extends FileView {
       session = await this.plugin.previewServer.createSession({
         entryRelativePath: file.path,
         mode,
-        scopeRelativePath: analysis.scopeRelativePath
+        scopeRelativePath: getGrantedResourceScope(analysis.scopeRelativePath, this.approvedResourceFiles),
+        resourceFiles: analysis.dependencyRelativePaths,
+        approvedFiles: this.approvedResourceFiles
       });
       if (
         browserSessionGeneration !== this.browserSessionGeneration
@@ -2259,7 +2537,7 @@ export class HtmlPreviewView extends FileView {
       }
 
       const token = session.token;
-      const timer = this.contentEl.win.setTimeout(() => {
+      const timer = this.timerWindow.setTimeout(() => {
         this.browserSessions.delete(token);
         void this.plugin.previewServer.revokeSession(token).catch(error => {
           console.error("[ZJ HTML Studio] Browser session expiry failed", error);
@@ -2270,7 +2548,7 @@ export class HtmlPreviewView extends FileView {
     } catch (error) {
       if (session) {
         const timer = this.browserSessions.get(session.token);
-        if (timer) this.contentEl.win.clearTimeout(timer);
+        if (timer) this.timerWindow.clearTimeout(timer);
         this.browserSessions.delete(session.token);
         await this.plugin.previewServer.revokeSession(session.token).catch(revokeError => {
           console.error("[ZJ HTML Studio] Failed to revoke browser session after open error", revokeError);
@@ -2293,69 +2571,81 @@ export class HtmlPreviewView extends FileView {
   }
 
   private async toggleAutoReload(): Promise<void> {
-    if (!this.autoReloadButton) return;
-    this.autoReloadButton.disabled = true;
-    try {
-      await this.plugin.setAutoReload(!this.plugin.settings.autoReload);
-    } catch (error) {
+    if (this.autoReloadChanging) return;
+    this.autoReloadChanging = true;
+    try { await this.plugin.setAutoReload(!this.plugin.settings.autoReload); }
+    catch (error) {
       console.error("[ZJ HTML Studio] Auto reload setting failed", error);
       new Notice("自动刷新设置没有保存成功，请重试。");
-    } finally {
-      if (this.autoReloadButton) this.autoReloadButton.disabled = false;
-      this.updateToolbarState();
+    } finally { this.autoReloadChanging = false; this.updateToolbarState(); }
+  }
+
+  private showToolbarMenu(menu: Menu, anchor: HTMLElement): void {
+    this.activeMenu?.hide();
+    this.activeMenu = menu;
+    anchor.setAttribute("aria-expanded", "true");
+    menu.setUseNativeMenu(false);
+    menu.setParentElement(this.contentEl);
+    menu.onHide(() => {
+      anchor.setAttribute("aria-expanded", "false");
+      if (this.activeMenu === menu) this.activeMenu = null;
+    });
+    const rect = anchor.getBoundingClientRect();
+    menu.showAtPosition({ x: rect.right, y: rect.bottom + 6, left: true }, this.contentEl.doc);
+  }
+
+  private openMoreMenu(anchor: HTMLElement): void {
+    const menu = new Menu();
+    const searchHidden = !this.searchButton?.getClientRects().length;
+    const refreshHidden = !this.refreshButton?.getClientRects().length;
+    if (searchHidden) menu.addItem(item => item.setTitle("查找页面内容").setIcon("search").setDisabled(Boolean(this.searchButton?.disabled)).onClick(() => this.openSearch()));
+    if (refreshHidden) menu.addItem(item => item.setTitle("刷新页面").setIcon("refresh-cw").setDisabled(!this.session).onClick(() => this.refreshPreview()));
+    if (searchHidden || refreshHidden) menu.addSeparator();
+    menu.addItem(item => item.setTitle("在浏览器中打开…").setIcon("external-link").setDisabled(!this.session).onClick(() => { void this.promptBrowserOpen(); }));
+    menu.addItem(item => item.setTitle("定位源文件").setIcon("folder-open").setDisabled(!this.file).onClick(() => { void this.plugin.revealActiveFile(); }));
+    const count = this.diagnostics.length + this.suppressedDiagnostics;
+    menu.addItem(item => item.setTitle(`页面信息与问题${count ? ` · ${count}` : ""}`).setIcon("info").onClick(() => this.toggleDiagnostics()));
+    menu.addSeparator();
+    menu.addItem(item => item.setTitle("页面权限…").setIcon("shield-check").setDisabled(!this.session).onClick(() => this.openModeModal()));
+    menu.addItem(item => item.setTitle("文件改动时自动刷新").setIcon("file-clock").setChecked(this.plugin.settings.autoReload).setDisabled(this.autoReloadChanging).onClick(() => { void this.toggleAutoReload(); }));
+    this.showToolbarMenu(menu, anchor);
+  }
+
+  private openZoomMenu(anchor: HTMLElement): void {
+    if (this.viewMode === "source") return;
+    const menu = new Menu();
+    for (const percent of [50, 75, 100, 125, 150, 200]) {
+      menu.addItem(item => item.setTitle(`${percent}%${percent === 100 ? " · 默认" : ""}`).setChecked(this.zoom === percent).onClick(() => {
+        this.zoom = percent; this.applyZoom(); this.updateToolbarState();
+      }));
     }
+    menu.addSeparator();
+    menu.addItem(item => item.setTitle("缩小").setIcon("minus").setDisabled(this.zoom <= 50).onClick(() => this.changeZoom(-1)));
+    menu.addItem(item => item.setTitle("放大").setIcon("plus").setDisabled(this.zoom >= 200).onClick(() => this.changeZoom(1)));
+    this.showToolbarMenu(menu, anchor);
   }
 
   private updateToolbarState(): void {
-    if (this.modeButton) {
-      const presentation = getPreviewModePresentation(this.mode);
-      this.modeButton.empty();
-      const dot = this.modeButton.createSpan({ cls: "html-studio-mode-dot" });
-      setIcon(dot, presentation.icon);
-      this.modeButton.createSpan({ text: presentation.label });
-      this.modeButton.toggleClass("is-interactive", this.mode === "interactive");
-      this.modeButton.toggleClass("is-trusted", this.mode === "trusted");
-      this.modeButton.title = presentation.title;
-    }
-
-    const scope = this.contentEl.querySelector<HTMLElement>("[data-role=scope]");
-    if (scope && this.analysis) {
-      scope.setText(`资源范围：${this.analysis.scopeRelativePath || "整个知识仓库"}`);
-      scope.title = this.analysis.scopeRelativePath || "整个知识仓库";
-    }
-
-    if (this.autoReloadButton) {
-      this.autoReloadButton.empty();
-      this.autoReloadButton.createSpan({ cls: "html-studio-switch" });
-      this.autoReloadButton.createSpan({ text: "自动刷新" });
-      this.autoReloadButton.toggleClass("is-on", this.plugin.settings.autoReload);
-      this.autoReloadButton.setAttribute("aria-pressed", this.plugin.settings.autoReload.toString());
-    }
-
+    const sourceActive = this.viewMode === "source";
+    this.previewTabButton?.toggleClass("is-active", !sourceActive);
+    this.previewTabButton?.setAttribute("aria-pressed", (!sourceActive).toString());
     if (this.viewToggleButton) {
-      const sourceActive = this.viewMode === "source";
-      const actionLabel = sourceActive ? "返回页面预览" : "查看只读源码";
-      this.viewToggleButton.empty();
-      const icon = this.viewToggleButton.createSpan();
-      setIcon(icon, sourceActive ? "panel-top" : "code-2");
-      this.viewToggleButton.createSpan({ text: sourceActive ? "预览" : "源码" });
       this.viewToggleButton.toggleClass("is-active", sourceActive);
       this.viewToggleButton.setAttribute("aria-pressed", sourceActive.toString());
-      this.viewToggleButton.setAttribute("aria-label", actionLabel);
-      this.viewToggleButton.title = actionLabel;
+      this.viewToggleButton.title = "查看只读源码";
       this.viewToggleButton.disabled = !sourceActive && this.sourceLoadPromise !== null;
     }
-
-    const zoomDisabled = this.viewMode === "source";
     if (this.zoomLabel) {
-      this.zoomLabel.setText(`${this.zoom}%`);
-      this.zoomLabel.disabled = zoomDisabled;
+      this.zoomLabel.querySelector("span:last-child")?.setText(`${this.zoom}%`);
+      this.zoomLabel.setAttribute("aria-label", `缩放：${this.zoom}%`);
+      this.zoomLabel.title = "调整显示比例";
+      this.zoomLabel.setAttribute("aria-haspopup", "menu");
+      this.zoomLabel.disabled = sourceActive;
     }
-    if (this.zoomOutButton) this.zoomOutButton.disabled = zoomDisabled || this.zoom <= 50;
-    if (this.zoomInButton) this.zoomInButton.disabled = zoomDisabled || this.zoom >= 200;
+    this.moreButton?.setAttribute("aria-haspopup", "menu");
     this.updateSearchState();
     this.updateFullscreenButton();
-
+    this.updatePresentationControls();
     this.renderDiagnostics();
   }
 
@@ -2385,6 +2675,9 @@ export class HtmlPreviewView extends FileView {
     preserveBrowserSessions?: boolean;
     preserveReloadRegistration?: boolean;
   } = {}): Promise<void> {
+    this.initialDocumentLoadTicket?.cancel();
+    this.initialDocumentLoadTicket = null;
+    this.plugin.presenter.sourceStopped(this);
     this.cancelCandidateTransition();
     this.resetSearchBridge();
     this.releaseSourceContent();
@@ -2406,7 +2699,7 @@ export class HtmlPreviewView extends FileView {
     }
 
     if (this.diagnosticsRenderFrame !== null) {
-      this.contentEl.win.cancelAnimationFrame(this.diagnosticsRenderFrame);
+      if (!this.diagnosticsRenderFrame.owner.closed) this.diagnosticsRenderFrame.owner.cancelAnimationFrame(this.diagnosticsRenderFrame.id);
       this.diagnosticsRenderFrame = null;
     }
 
@@ -2416,7 +2709,7 @@ export class HtmlPreviewView extends FileView {
       this.browserSessionProbeAbortController?.abort();
       this.browserSessionProbeAbortController = null;
       this.browserSessions.clear();
-      tokens.forEach(([, timer]) => this.contentEl.win.clearTimeout(timer));
+      tokens.forEach(([, timer]) => this.timerWindow.clearTimeout(timer));
     }
     const session = this.session;
     this.session = null;
@@ -2450,8 +2743,8 @@ export class HtmlPreviewView extends FileView {
     const generation = this.beginLoad();
     const signal = this.loadAbortController!.signal;
     const policyGeneration = this.previewPolicyGeneration;
-    let modeIntent = this.modeOverride;
-    let nextConfirmedScopePath = this.confirmedScopePath;
+    const modeIntent = this.modeOverride;
+    const nextConfirmedScopePath = this.confirmedScopePath;
     let candidate: PreviewSession | null = null;
     let prepared: PreparedPreviewCandidate | null = null;
     this.setStatus(
@@ -2460,7 +2753,7 @@ export class HtmlPreviewView extends FileView {
     );
 
     try {
-      let analysis = await analyzePreviewScope(this.plugin.vaultBasePath, file.path, { signal });
+      const analysis = await analyzePreviewScope(this.plugin.vaultBasePath, file.path, { signal });
       if (!isAutoReloadCandidateCurrent({
         aborted: signal.aborted,
         currentGeneration: this.loadGeneration,
@@ -2468,35 +2761,6 @@ export class HtmlPreviewView extends FileView {
         generation,
         previousToken
       })) return;
-
-      if (shouldConfirmScope(
-        analysis.requiresConfirmation,
-        nextConfirmedScopePath,
-        analysis.scopeRelativePath
-      )) {
-        const modal = new ScopeConfirmationModal(this.app, analysis);
-        this.activeScopeModal = modal;
-        const decision = await modal.waitForDecision();
-        if (this.activeScopeModal === modal) this.activeScopeModal = null;
-        if (!isAutoReloadCandidateCurrent({
-          aborted: signal.aborted,
-          currentGeneration: this.loadGeneration,
-          currentToken: this.session?.token ?? null,
-          generation,
-          previousToken
-        })) return;
-        if (decision === "cancel") {
-          this.setStatus("新版本需要更大的资源范围；未获得确认，继续显示上一次可用版本。", "error");
-          return;
-        }
-        if (decision === "entry-folder-safe") {
-          analysis = applyEntryFolderSafeTrial(analysis);
-          modeIntent = "safe";
-          nextConfirmedScopePath = null;
-        } else {
-          nextConfirmedScopePath = analysis.scopeRelativePath;
-        }
-      }
 
       const permissionScopePath = getHtmlPermissionScopePath(file.path);
       let nextMode = resolvePreviewMode(
@@ -2525,7 +2789,9 @@ export class HtmlPreviewView extends FileView {
         enableSearchBridge: true,
         entryRelativePath: file.path,
         mode: nextMode,
-        scopeRelativePath: analysis.scopeRelativePath
+        scopeRelativePath: getGrantedResourceScope(analysis.scopeRelativePath, this.approvedResourceFiles),
+        resourceFiles: analysis.dependencyRelativePaths,
+        approvedFiles: this.approvedResourceFiles
       });
       const probe = await this.probeCandidateSession(candidate.token, signal);
       if (probe.cancelled) {
@@ -2543,7 +2809,7 @@ export class HtmlPreviewView extends FileView {
         candidate = null;
         return;
       }
-      prepared = await this.preparePreviewCandidate(candidate, analysis, nextMode, signal);
+      prepared = await this.preparePreviewCandidate(candidate, nextMode, signal);
       if (!isAutoReloadCandidateCurrent({
         aborted: signal.aborted,
         currentGeneration: this.loadGeneration,
@@ -2567,6 +2833,19 @@ export class HtmlPreviewView extends FileView {
         await this.discardPreviewCandidate(prepared);
         prepared = null;
         candidate = null;
+        return;
+      }
+
+      // Fullscreen may have started while the candidate was loading. Replacing
+      // its active iframe would exit fullscreen, so retry after Escape instead.
+      // Mark the retry before awaiting cleanup, which may overlap that Escape.
+      if (isFullscreenTarget(this.getPreviewIframe(), this.contentEl.doc)) {
+        if (trigger === "manual") this.deferredManualReload = true;
+        else this.deferredFullscreenReload = true;
+        const deferred = prepared;
+        prepared = null;
+        candidate = null;
+        await this.discardPreviewCandidate(deferred);
         return;
       }
 
@@ -2663,11 +2942,14 @@ export class HtmlPreviewView extends FileView {
   }
 
   private updateReloadRegistration(sessionId: string, dependencies: Iterable<string>): void {
+    // Changes to granted files should trigger refresh without turning those grants
+    // into automatically authorized, statically discovered companion resources.
+    const trackedDependencies = new Set([...dependencies, ...this.approvedResourceFiles]);
     if (this.unregisterReloadDependencies) {
       const updated = this.plugin.updatePreviewDependencies(
         this.reloadRegistrationId,
         sessionId,
-        dependencies
+        trackedDependencies
       );
       if (updated) return;
       this.unregisterReloadDependencies = null;
@@ -2676,7 +2958,7 @@ export class HtmlPreviewView extends FileView {
     this.unregisterReloadDependencies = this.plugin.registerPreviewDependencies(
       this.reloadRegistrationId,
       sessionId,
-      dependencies,
+      trackedDependencies,
       () => this.reloadAfterDependencyChange()
     );
   }
@@ -2706,6 +2988,7 @@ function isSearchBridgeMessage(value: unknown): value is SearchBridgeMessage {
   if (!("channel" in value) || typeof value.channel !== "string") return false;
   if (!("type" in value) || typeof value.type !== "string") return false;
   return [
+    "html-studio-fullscreen-exit",
     "html-studio-page-state",
     "html-studio-page-state-restored",
     "html-studio-search-leaving",

@@ -25,4 +25,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - if: runner.os == 'Linux'
+        run: npx playwright-core install --with-deps chromium
+      - if: runner.os == 'Linux'
+        run: npm run test:browser
       - run: npm audit --audit-level=high
