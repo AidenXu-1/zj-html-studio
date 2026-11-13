@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { HtmlPreviewView } from "../../src/view/html-preview-view";
@@ -13,8 +13,9 @@ const styles = readFileSync(new URL("../../styles.css", import.meta.url), "utf8"
 // eslint-disable-next-line @typescript-eslint/unbound-method -- Serialized, then called with an explicit zoom receiver in Chromium.
 const apply = (HtmlPreviewView.prototype as unknown as { applyZoomToIframe(frame: HTMLIFrameElement): void }).applyZoomToIframe;
 let browser: Browser;
+const systemChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 beforeAll(async () => { browser = await chromium.launch({ executablePath: process.env.HTML_STUDIO_CHROMIUM_PATH
-  ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: true }); });
+  ?? (existsSync(systemChrome) ? systemChrome : undefined), headless: true }); });
 afterAll(async () => { await browser?.close(); });
 
 async function mount(html: string): Promise<Page> {
