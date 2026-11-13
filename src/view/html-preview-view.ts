@@ -1423,11 +1423,6 @@ export class HtmlPreviewView extends FileView {
     // keeps the authored viewport unchanged, so responsive decks cannot cancel
     // the visual scale by fitting themselves to a smaller viewport.
     surface.setCssProps({ "--html-studio-preview-zoom": String(scale) });
-    iframe.setCssStyles({
-      width: `${100 / scale}%`,
-      height: `${100 / scale}%`,
-      transform: `scale(${scale})`
-    });
   }
 
   private toggleSearch(): void {
@@ -1952,7 +1947,7 @@ export class HtmlPreviewView extends FileView {
     });
     const close = header.createEl("button", { cls: "clickable-icon html-studio-diagnostics-close", attr: { "aria-label": "关闭页面信息", title: "关闭页面信息" } });
     setIcon(close, "x");
-    close.addEventListener("click", () => { drawer.removeClass("is-open"); this.moreButton?.focus(); });
+    close.addEventListener("click", () => { this.setDiagnosticsOpen(false); this.moreButton?.focus(); });
     const body = drawer.createDiv({ cls: "html-studio-diagnostics-body", attr: { tabindex: "0", role: "region", "aria-label": "页面问题详情" } });
 
     if (this.analysis) {
@@ -2221,7 +2216,12 @@ export class HtmlPreviewView extends FileView {
 
   private toggleDiagnostics(): void {
     if (!this.diagnosticsDrawer) return;
-    this.diagnosticsDrawer.toggleClass("is-open", !this.diagnosticsDrawer.hasClass("is-open"));
+    this.setDiagnosticsOpen(!this.diagnosticsDrawer.hasClass("is-open"));
+  }
+
+  private setDiagnosticsOpen(open: boolean): void {
+    this.diagnosticsDrawer?.toggleClass("is-open", open);
+    this.diagnosticsDrawer?.parentElement?.toggleClass("is-showing-diagnostics", open);
   }
 
   private openModeModal(requestMode?: "standard" | "trusted"): void {

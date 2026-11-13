@@ -54,7 +54,11 @@ export default defineConfig(
       ...tseslint.configs.disableTypeChecked.rules,
       // The external runner intentionally inspects the marked test app.
       "no-restricted-globals": "off",
-      "obsidianmd/prefer-window-timers": "off"
+      "obsidianmd/prefer-window-timers": "off",
+      // Runtime acceptance changes the disposable host's CSS for A/B comparisons.
+      // These allowances do not apply to shipped src/ code.
+      "obsidianmd/no-forbidden-elements": "off",
+      "obsidianmd/no-static-styles-assignment": "off"
     }
   }
 );

@@ -1,7 +1,7 @@
 {
   "id": "zj-html-studio",
   "name": "ZJ HTML Studio",
-  "version": "0.4.21",
+  "version": "0.4.22",
   "minAppVersion": "1.12.7",
   "description": "Preview local HTML, follow slide notes, present in a separate window, and embed pages with scoped resources.",
   "author": "兆基",
