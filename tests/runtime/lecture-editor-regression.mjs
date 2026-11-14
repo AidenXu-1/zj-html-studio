@@ -39,6 +39,7 @@ try {
   await main.evaluate(async ({ root, html }) => {
     const p = app.plugins.plugins["zj-html-studio"];
     if (p.presenter.output) throw Error("Stop an existing test presentation first");
+    await p.setAutoReload(true);
     await app.vault.createFolder(root);
     await app.vault.create(`${root}/${root}.html`, html);
     p.settings.interactiveScopes.push(root); await p.saveData(p.settings);
