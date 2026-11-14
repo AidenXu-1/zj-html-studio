@@ -1219,7 +1219,7 @@ body.html-studio-projection-fullscreen .titlebar { display: none; }
 .html-studio-view button.html-studio-search-count:disabled { opacity: 1; cursor: default; }
 .html-studio-search-bar .html-studio-icon-button:disabled { opacity: .3; cursor: default; }
 
-.html-studio-lecture-body .cm-editor:not(.cm-focused) .cm-line.html-studio-empty-line { line-height: 10px; }
+.html-studio-lecture-body .cm-editor:not(.cm-focused) .cm-line:has(> br:only-child) { line-height: 10px; }
 
 /* File access requests share the established compact permissions dialog. */
 .html-studio-resource-modal .modal-title { margin-bottom: 6px; }

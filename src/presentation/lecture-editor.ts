@@ -1,6 +1,6 @@
 import { Component, MarkdownRenderer, type App } from "obsidian";
 import { EditorState, StateEffect, StateField, type Range } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin, WidgetType, keymap, placeholder, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import { Decoration, EditorView, WidgetType, keymap, placeholder, type DecorationSet } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown, insertNewlineContinueMarkupCommand, deleteMarkupBackward } from "@codemirror/lang-markdown";
 import { syntaxTree } from "@codemirror/language";
@@ -12,33 +12,6 @@ const focused = StateField.define({ create: () => false, update: (value, transac
   return value;
 } });
 const renderedComponents = new WeakMap<HTMLElement, Component>();
-
-// Mark visible empty document lines without a relational selector or DOM observer.
-// An empty document keeps the normal placeholder height.
-const emptyLine = Decoration.line({ class: "html-studio-empty-line" });
-const emptyLines = ViewPlugin.fromClass(class {
-  decorations: DecorationSet;
-  constructor(view: EditorView) { this.decorations = this.build(view); }
-  update(update: ViewUpdate): void {
-    if (update.docChanged || update.viewportChanged) this.decorations = this.build(update.view);
-  }
-  private build(view: EditorView): DecorationSet {
-    const ranges: Range<Decoration>[] = [];
-    const seen = new Set<number>();
-    if (view.state.doc.length === 0) return Decoration.none;
-    for (const { from, to } of view.visibleRanges) {
-      for (let position = from; position <= to;) {
-        const line = view.state.doc.lineAt(position);
-        if (line.length === 0 && !seen.has(line.from)) {
-          ranges.push(emptyLine.range(line.from));
-          seen.add(line.from);
-        }
-        position = line.to + 1;
-      }
-    }
-    return Decoration.set(ranges, true);
-  }
-}, { decorations: value => value.decorations });
 
 /** Render inactive blocks, edit the original Markdown at the caret. No HTML round trip. */
 class MarkdownBlock extends WidgetType {
@@ -94,7 +67,7 @@ export class LectureEditor {
         { key: "Enter", run: insertNewlineContinueMarkupCommand({ nonTightLists: false }) },
         { key: "Backspace", run: deleteMarkupBackward }, ...defaultKeymap, ...historyKeymap
       ]), EditorView.lineWrapping,
-      focused, blocks, emptyLines, placeholder("写下这一页的讲述提示…"),
+      focused, blocks, placeholder("写下这一页的讲述提示…"),
       EditorView.contentAttributes.of({ "aria-label": `第 ${page} 页讲义`, "aria-multiline": "true", spellcheck: "false" }),
       EditorView.updateListener.of(update => {
         if (update.docChanged && !this.updating) onChange(update.state.doc.toString());

@@ -27,10 +27,17 @@ let passed = false, popout;
 const sourceFrame = page => page.locator(".html-studio-preview-canvas:not(.html-studio-preview-candidate) .html-studio-iframe:visible");
 const canvas = page => page.locator(".html-studio-preview-canvas:not(.html-studio-preview-candidate):visible");
 const waitPage = async n => main.waitForFunction(n => app.plugins.plugins["zj-html-studio"].presenter.source?.getLectureContext()?.deck.current === n, n);
+const migrated = async home => main.waitForFunction(home => {
+  const view = app.plugins.plugins["zj-html-studio"].presenter.source;
+  return view && (view.contentEl.win === window) === home
+    && view.iframeOwnerWindow === view.contentEl.win && view.searchBridgeReady
+    && !view.initialDocumentLoadTicket && !view.activePageRestoreState;
+}, home);
 const selectZoom = async (page, value) => {
   await page.locator(".html-studio-zoom-label:visible").click();
   await page.getByText(value === 100 ? "100% · 默认" : `${value}%`, { exact: true }).click();
-  await page.waitForFunction(value => document.querySelector(".html-studio-zoom-label")?.getAttribute("aria-label") === `缩放：${value}%`, value);
+  await main.waitForFunction(value => app.plugins.plugins["zj-html-studio"].presenter.source.contentEl
+    .querySelector(".html-studio-zoom-label")?.getAttribute("aria-label") === `缩放：${value}%`, value);
 };
 const geometry = async (page, label) => {
   const frame = sourceFrame(page);
@@ -54,6 +61,17 @@ try {
     const leaf = app.workspace.getLeaf("tab"); await leaf.openFile(app.vault.getAbstractFileByPath(`${root}/fixed.html`)); return leaf.id;
   }, root); leafIds.push(id);
   await main.waitForFunction(() => Boolean(app.plugins.plugins["zj-html-studio"].presenter.source?.getPresentationContext()));
+  await main.evaluate(() => app.plugins.plugins["zj-html-studio"].presenter.showNotes());
+  await main.locator(".html-studio-lecture:visible .cm-content").waitFor();
+  await main.evaluate(async () => {
+    const canvas = document.querySelector(".html-studio-preview-canvas");
+    let previous = "", stable = 0;
+    for (let i = 0; i < 120 && stable < 6; i++) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const rect = canvas.getBoundingClientRect(), size = `${rect.width},${rect.height}`;
+      stable = size === previous ? stable + 1 : 0; previous = size;
+    }
+  });
   await main.bringToFront();
   const base = await geometry(main, "100%");
   for (const value of [50, 200, 125, 100]) {
@@ -137,12 +155,16 @@ try {
   assert.equal(await main.evaluate(() => app.plugins.plugins["zj-html-studio"].presenter.source.getPresentationContext().picture), true);
   const opened = context.waitForEvent("page"); await main.locator(".html-studio-projection-button:visible").click();
   const output = await opened;
+  // Picture projection intentionally pauses while its source is covered.
+  await main.bringToFront();
   await main.waitForFunction(() => app.plugins.plugins["zj-html-studio"].presenter.output?.ready, null, { timeout: 20000 });
   await main.bringToFront();
   const frames = await main.evaluate(() => app.plugins.plugins["zj-html-studio"].presenter.output.view.picture.frames);
   await main.waitForFunction(frames => app.plugins.plugins["zj-html-studio"].presenter.output.view.picture.frames > frames + 2, frames);
   assert.ok(await output.locator(".html-studio-projection-picture").evaluate(img => img.naturalWidth > 100 && img.naturalHeight > 100));
+  const outputClosed = output.waitForEvent("close");
   await main.evaluate(() => app.plugins.plugins["zj-html-studio"].presenter.stopProjection());
+  await outputClosed;
   checks.push("Picture projection continues delivering course-only frames at 200% with a scrolled preview");
 
   await selectZoom(main, 100);
@@ -162,16 +184,21 @@ try {
   });
   const moved = context.waitForEvent("page");
   await main.evaluate(() => { app.workspace.moveLeafToPopout(app.plugins.plugins["zj-html-studio"].presenter.source.leaf); });
-  popout = await moved; await waitPage(3);
+  popout = await moved; await migrated(false); await waitPage(3);
   await main.waitForFunction(() => app.plugins.plugins["zj-html-studio"].presenter.source.searchMatchPages.length === 2);
   assert.equal(await main.locator('input[aria-label="跳转到课件页码"]').inputValue(), "3");
   const placeholderId = await main.evaluate(() => {
     const leaf = app.plugins.plugins["zj-html-studio"].presenter.source.leaf;
     const placeholder = app.workspace.createLeafInParent(leaf.parent, leaf.parent.children.length);
-    leaf.parent.removeChild(leaf); window.__zoomHome.parent.insertChild(window.__zoomHome.index, leaf);
+    leaf.parent.removeChild(leaf);
+    // Obsidian may move the original tab group when its last leaf is popped out.
+    const home = window.__zoomHome.parent.containerEl.isConnected
+      && window.__zoomHome.parent.containerEl.win === window
+      ? window.__zoomHome.parent : app.workspace.rootSplit.children[0];
+    home.insertChild(window.__zoomHome.index, leaf);
     app.workspace.setActiveLeaf(leaf, { focus: true }); return placeholder.id;
   });
-  await waitPage(3);
+  await migrated(true); await waitPage(3);
   const closed = popout.waitForEvent("close");
   await main.evaluate(id => app.workspace.iterateAllLeaves(leaf => { if (leaf.id === id) leaf.detach(); }), placeholderId);
   await closed;
@@ -181,6 +208,14 @@ try {
   assert.deepEqual(errors, []); passed = true;
 } catch (error) {
   checks.push({ failure: error.stack || String(error) });
+  measurements.push(await main.evaluate(() => {
+    const v = app.plugins.plugins["zj-html-studio"].presenter.source;
+    return { label: "failure-state", connected: v?.contentEl.isConnected, ownerMain: v?.contentEl.win === window,
+      ownerBound: v?.iframeOwnerWindow === v?.contentEl.win, bridge: v?.searchBridgeReady,
+      loading: Boolean(v?.initialDocumentLoadTicket), restoring: v?.activePageRestoreState,
+      windowRestore: v?.windowRestoreState, last: v?.lastPageReadingState,
+      current: v?.deckState?.current, search: v?.searchMatchPages };
+  }));
   if (artifacts) await main.screenshot({ path: path.join(artifacts, "failure.png") });
   process.exitCode = 1;
 } finally {
