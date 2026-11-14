@@ -39,6 +39,7 @@ try {
   await main.evaluate(async ({ root, html }) => {
     const p = app.plugins.plugins["zj-html-studio"];
     if (p.presenter.output) throw Error("Stop an existing test presentation first");
+    await p.setAutoReload(true);
     await app.vault.createFolder(root);
     await app.vault.create(`${root}/${root}.html`, html);
     p.settings.interactiveScopes.push(root); await p.saveData(p.settings);
@@ -154,14 +155,23 @@ try {
   const configDir = await main.evaluate(() => app.vault.configDir);
   const journal = await fs.readFile(path.join(vaultPath, configDir, "plugins/zj-html-studio/lecture-drafts.json"), "utf8");
   assert.match(journal, /保存失败也不能丢失这段草稿/);
-  await main.evaluate(async root => {
+  const reloadedLeaf = await main.evaluate(async root => {
     const old = app.plugins.plugins["zj-html-studio"].presenter.notes;
     await app.plugins.disablePlugin("zj-html-studio");
     await old.flush();
     await app.plugins.enablePlugin("zj-html-studio");
-    await app.workspace.getLeaf("tab").openFile(app.vault.getAbstractFileByPath(`${root}/${root}.html`));
+    const leaf = app.workspace.getLeaf("tab");
+    await leaf.openFile(app.vault.getAbstractFileByPath(`${root}/${root}.html`));
+    return leaf.id;
   }, root);
-  await main.waitForFunction(root => app.plugins.plugins["zj-html-studio"].presenter.context?.filePath === `${root}/${root}.html`, root);
+  // Reload can restore the old tab before the new one finishes loading.
+  // Wait for the tab being tested, not another copy of the same file.
+  await main.waitForFunction(({ root, reloadedLeaf }) => {
+    const p = app.plugins.plugins["zj-html-studio"].presenter;
+    return p.source?.leaf.id === reloadedLeaf && p.context?.filePath === `${root}/${root}.html`
+      && p.source.iframeLoadGeneration > 0 && !p.source.initialDocumentLoadTicket
+      && !p.source.activePageRestoreState;
+  }, { root, reloadedLeaf });
   await main.evaluate(() => { app.plugins.plugins["zj-html-studio"].presenter.jump(15); return app.plugins.plugins["zj-html-studio"].presenter.showNotes(); });
   await pageIs(15);
   assert.match(await content().innerText(), /保存失败也不能丢失这段草稿/);

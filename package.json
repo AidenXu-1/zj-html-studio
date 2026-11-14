@@ -1,6 +1,6 @@
 {
   "name": "zj-html-studio",
-  "version": "0.4.21",
+  "version": "0.4.22",
   "private": true,
   "description": "Preview local HTML, follow slide notes, present in a separate window, and embed pages with scoped resources.",
   "main": "dist/main.js",
@@ -23,7 +23,8 @@
     "test:obsidian:resource-access": "node tests/runtime/default-opening.mjs",
     "test:obsidian:canvas": "node tests/runtime/fixed-canvas.mjs",
     "test:obsidian:display": "node tests/runtime/projection-display.mjs",
-    "test:obsidian:access-regression": "node tests/runtime/resource-access-regression.mjs"
+    "test:obsidian:access-regression": "node tests/runtime/resource-access-regression.mjs",
+    "test:obsidian:styles": "node tests/runtime/style-regression.mjs"
   },
   "keywords": [
     "obsidian",

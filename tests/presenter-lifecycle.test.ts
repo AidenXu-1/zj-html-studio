@@ -11,7 +11,7 @@ vi.mock("../src/presentation/projection-view", () => ({ PROJECTION_VIEW_TYPE: "p
 function fixture() {
   const plugin = {
     manifest: { id: "zj-html-studio" }, settings: { lectureNotes: {} },
-    app: { vault: { configDir: ".obsidian", adapter: { exists: async () => false } } }
+    app: { vault: { configDir: ".test-config", adapter: { exists: async () => false } } }
   } as unknown as HtmlStudioPlugin;
   const presenter = new Presenter(plugin);
   const source = (): PresentationSource => ({

@@ -20,6 +20,7 @@ const results = [];
 const pageErrors = [];
 let currentCase = "setup";
 let currentStep = "setup";
+let activeOutput;
 const observe = page => page.on("pageerror", error => pageErrors.push({
   case: currentCase, step: currentStep, message: error.message, stack: error.stack
 }));
@@ -48,7 +49,12 @@ const run = async (name, fn) => {
   }
   process.stdout.write(JSON.stringify(results.at(-1)) + "\n");
 };
-const stop = () => main.evaluate(() => app.plugins.plugins["zj-html-studio"].presenter.stopProjection());
+const stop = async () => {
+  const closed = activeOutput && !activeOutput.isClosed() ? activeOutput.waitForEvent("close") : null;
+  await main.evaluate(() => app.plugins.plugins["zj-html-studio"].presenter.stopProjection());
+  if (closed) await closed;
+  activeOutput = null;
+};
 const open = async name => {
   currentStep = `open ${name}`;
   await stop();
@@ -80,10 +86,17 @@ const start = async () => {
     return p.startProjection(p.source);
   });
   const output = await opened;
+  activeOutput = output;
   await main.waitForFunction(() => app.plugins.plugins["zj-html-studio"].presenter.output?.ready, null, { timeout: 18000 });
   return output;
 };
 const actualPage = async (window, selector) => window.frameLocator(selector).locator(".slide.active").getAttribute("id");
+const migrated = async home => main.waitForFunction(home => {
+  const view = app.plugins.plugins["zj-html-studio"].presenter.source;
+  return view && (view.contentEl.win === window) === home
+    && view.iframeOwnerWindow === view.contentEl.win && view.searchBridgeReady
+    && !view.initialDocumentLoadTicket && !view.activePageRestoreState;
+}, home);
 
 try {
   await main.evaluate(async ({ root, sync, delayed, note }) => {
@@ -181,6 +194,7 @@ try {
       const opened = context.waitForEvent("page");
       await main.evaluate(() => { app.workspace.moveLeafToPopout(app.plugins.plugins["zj-html-studio"].presenter.source.leaf); });
       const popout = await opened;
+      await migrated(false);
       await matching(15);
       currentStep = "next in popout";
       await popout.frameLocator(".html-studio-iframe").locator("#next").click();
@@ -198,6 +212,7 @@ try {
         app.workspace.setActiveLeaf(source.leaf, { focus: true });
         return placeholder.id;
       });
+      await migrated(true);
       await main.frameLocator(".html-studio-preview-canvas:not(.html-studio-preview-candidate) .html-studio-iframe:visible").locator(".slide.active").waitFor();
       await matching(16);
       await jump(15); await matching(15);
