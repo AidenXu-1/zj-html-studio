@@ -1,6 +1,6 @@
 {
   "name": "zj-html-studio",
-  "version": "0.4.22",
+  "version": "0.4.24",
   "private": true,
   "description": "Preview local HTML, follow slide notes, present in a separate window, and embed pages with scoped resources.",
   "main": "dist/main.js",

@@ -9,7 +9,7 @@ export interface AdapterSnapshot {
 
 /** Serialized into the isolated course frame. No imports or host objects at runtime. */
 /* eslint-disable @typescript-eslint/unbound-method -- Captured DOM intrinsics are called with explicit receivers via Reflect.apply. */
-export function createDeckAdapters(): () => AdapterSnapshot | null {
+export function createDeckAdapters(): (validatedNumberedDeck?: boolean) => AdapterSnapshot | null {
   const apply = Reflect.apply.bind(Reflect);
   const attr = Element.prototype.getAttribute;
   const rect = Element.prototype.getBoundingClientRect;
@@ -64,11 +64,18 @@ export function createDeckAdapters(): () => AdapterSnapshot | null {
       if ((["auto", "scroll"].includes(cs.overflowY) && parent.scrollHeight > parent.clientHeight * 1.25)
         || (["auto", "scroll"].includes(cs.overflowX) && parent.scrollWidth > parent.clientWidth * 1.25)) return false;
     }
-    return r.width >= innerWidth * .5 && r.height >= innerHeight * .45
+    // A fixed presentation canvas can fit one viewport axis and leave large
+    // margins on the other when Obsidian sidebars make the preview tall/narrow.
+    // Require an author-scaled canvas fitting the viewport; small embedded
+    // carousels and scrolling articles still fail the existing checks below.
+    const fittedCanvas = style(el).transform !== "none" && r.width > 0 && r.height > 0
+      && r.width <= innerWidth * 1.05 && r.height <= innerHeight * 1.05
+      && (r.width >= innerWidth * .7 || r.height >= innerHeight * .7);
+    return (r.width >= innerWidth * .5 && r.height >= innerHeight * .45 || fittedCanvas)
       && (clipped("overflowY") || Math.max(page.scrollHeight, document.body.scrollHeight) <= innerHeight * 1.25)
       && (clipped("overflowX") || Math.max(page.scrollWidth, document.body.scrollWidth) <= innerWidth * 1.25);
   };
-  return () => {
+  return (validatedNumberedDeck = false) => {
     if (!document.body) return null;
     const started = now();
     deadline = started + 24;
@@ -128,13 +135,16 @@ export function createDeckAdapters(): () => AdapterSnapshot | null {
           typeof swiper[method] === "function" ? page => { call(swiper,method,[page-1]); } : undefined);
       }
     } catch { return null; }
-    // Legacy numeric decks are validated by their strict adapter, never repaired
-    // by guessing around a gap, duplicate number or mixed prefix here.
+    // Numbered IDs describe order, not a working hash router. They may use
+    // ordinary buttons; keep strict continuity before offering that adapter.
     const numbered = all.filter(el => words(el).includes("slide") && /^(p|slide-)\d+$/i.test(get(el,"id")));
     if (numbered.length) {
       const ids = numbered.map(el => /^(p|slide-)(\d+)$/i.exec(get(el,"id"))!);
-      const zeroBased = ids.length >= 2 && ids.every((id,i) => id[1]!.toLowerCase() === ids[0]![1]!.toLowerCase() && Number(id[2]) === i);
-      if (!zeroBased) return null;
+      const first = Number(ids[0]![2]);
+      if (first === 1 && !validatedNumberedDeck) return null;
+      const continuous = (first === 0 || first === 1) && ids.length >= 2
+        && ids.every((id,i) => id[1]!.toLowerCase() === ids[0]![1]!.toLowerCase() && Number(id[2]) === i + first);
+      if (!continuous) return null;
     }
     const groups = new Map<Element,Element[]>();
     for(const el of all){

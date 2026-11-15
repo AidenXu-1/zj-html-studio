@@ -15,7 +15,15 @@ assert.equal(await main.evaluate(() => app.vault.adapter.getBasePath()), vault);
 main.setDefaultTimeout(8_000);
 await fs.mkdir(artifacts, { recursive: true });
 const checks = [], errors = [];
-const observe = page => page.on("pageerror", error => errors.push(error.stack || error.message || String(error)));
+// An app.asar update does not update Electron. Record the actual installer
+// runtime so a host fix cannot be confused with a plugin-only change.
+const environment = await main.evaluate(() => ({
+  electron: process.versions.electron,
+  chrome: process.versions.chrome,
+  plugin: app.plugins.plugins["zj-html-studio"].manifest.version
+}));
+let phase = "setup";
+const observe = page => page.on("pageerror", error => errors.push({ phase, message: error.stack || error.message || String(error), url: page.url() }));
 context.pages().forEach(observe); context.on("page", observe);
 const root = `universal-deck-${Date.now()}`;
 const settings = await main.evaluate(() => JSON.parse(JSON.stringify(app.plugins.plugins["zj-html-studio"].settings)));
@@ -70,7 +78,8 @@ try {
   await pageIs(1);
   assert.equal(await main.evaluate(() => app.plugins.plugins["zj-html-studio"].presenter.context.deck.adapter), "dom");
   const output = await start();
-  assert.equal(await output.locator(".html-studio-projection-picture").count(), 1);
+  assert.equal(await output.locator(".html-studio-projection-frame").count(), 1);
+  assert.equal(await output.locator(".html-studio-projection-picture").count(), 0);
   for (const n of [2, 3]) {
     await output.keyboard.press("ArrowRight"); await pageIs(n);
     await main.waitForFunction(n => app.plugins.plugins["zj-html-studio"].presenter.output.acknowledgedPage === n, n);
@@ -89,16 +98,19 @@ try {
   assert.equal(await main.frameLocator('.html-studio-preview-canvas:not(.html-studio-preview-candidate) .html-studio-iframe:visible').locator('.screen.active').getAttribute('id'), 'closing');
   checks.push("Refresh replaces the preview only after restoring page 3; author HTML IDs and URL remain unchanged");
 
-  for (let round = 0; round < 3; round++) {
+  for (let round = 0; round < 6; round++) {
+    phase = `migration ${round + 1}: start projection`;
     const pictureOutput = await start();
     const outputClosed = pictureOutput.waitForEvent("close", { timeout: 10000 });
     const moved = context.waitForEvent("page", { timeout: 10000 });
+    phase = `migration ${round + 1}: move out`;
     await main.evaluate(() => { app.workspace.moveLeafToPopout(app.plugins.plugins["zj-html-studio"].presenter.source.leaf); });
     const sourceWindow = await moved;
     sourceWindow.setDefaultTimeout(8000);
     await main.waitForFunction(() => !app.plugins.plugins["zj-html-studio"].presenter.output);
     await outputClosed;
     await sourceWindow.frameLocator('.html-studio-iframe').locator('.screen.active').filter({ hasText: 'Lesson 3' }).waitFor();
+    phase = `migration ${round + 1}: move back`;
     const placeholderId = await main.evaluate(() => {
       const source = app.plugins.plugins["zj-html-studio"].presenter.source;
       const placeholder = app.workspace.createLeafInParent(source.leaf.parent, source.leaf.parent.children.length);
@@ -111,10 +123,12 @@ try {
       .locator('.screen.active').filter({ hasText: 'Lesson 3' }).waitFor();
     await pageIs(3);
     const closed = sourceWindow.waitForEvent("close", { timeout: 10000 });
+    phase = `migration ${round + 1}: close old window`;
     await main.evaluate(id => app.workspace.iterateAllLeaves(leaf => { if (leaf.id === id) leaf.detach(); }), placeholderId);
     await closed;
   }
-  checks.push("Three live picture-projection migrations stop output, retain page 3, move back and close the old window without exceptions");
+  checks.push("Six live projection migrations stop output, retain page 3, move back and close the old window without exceptions");
+  phase = "notes association";
   await main.evaluate(root => app.workspace.getLeavesOfType("html-studio-preview").filter(leaf => leaf.view.file?.path === `${root}/controlled.html`).forEach(leaf => leaf.detach()), root);
 
   await open("observed"); await pageIs(1);
@@ -157,8 +171,8 @@ try {
   }, { root, settings });
   await main.waitForFunction(root => ![...app.plugins.plugins["zj-html-studio"].previewServer.sessions.values()]
     .some(session => session.entryAbsolutePath.includes(`/${root}/`)), root);
-  assert.deepEqual(errors, [], "Unexpected script errors, including window cleanup");
-  await fs.writeFile(path.join(artifacts, "result.json"), JSON.stringify({ checks, errors }, null, 2));
-  process.stdout.write(JSON.stringify({ checks, errors }) + "\n");
+  await fs.writeFile(path.join(artifacts, "result.json"), JSON.stringify({ environment, checks, errors }, null, 2));
+  process.stdout.write(JSON.stringify({ environment, checks, errors }) + "\n");
   await browser.close();
+  assert.deepEqual(errors, [], "Unexpected script errors, including window cleanup");
 }

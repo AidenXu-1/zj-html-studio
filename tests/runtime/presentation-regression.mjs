@@ -17,6 +17,11 @@ const savedSettings = await main.evaluate(() => JSON.parse(JSON.stringify(app.pl
 const artifacts = process.env.HTML_STUDIO_TEST_ARTIFACTS;
 if (artifacts) await fs.mkdir(artifacts, { recursive: true });
 const results = [];
+const environment = await main.evaluate(() => ({
+  electron: process.versions.electron,
+  chrome: process.versions.chrome,
+  plugin: app.plugins.plugins["zj-html-studio"].manifest.version
+}));
 const pageErrors = [];
 let currentCase = "setup";
 let currentStep = "setup";
@@ -268,6 +273,6 @@ try {
     .some(session => session.entryAbsolutePath.includes(`/${root}/`)), root);
   await browser.close();
 }
-if (artifacts) await fs.writeFile(path.join(artifacts, "results.json"), JSON.stringify({ results, pageErrors, sessionsRestored: true }, null, 2));
+if (artifacts) await fs.writeFile(path.join(artifacts, "results.json"), JSON.stringify({ environment, results, pageErrors, sessionsRestored: true }, null, 2));
 assert.deepEqual(pageErrors, [], "Unexpected script errors");
 assert.ok(results.length === 4 && results.every(result => result.passed), "Presentation regressions failed");

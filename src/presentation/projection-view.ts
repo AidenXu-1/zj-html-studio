@@ -155,7 +155,9 @@ export class ProjectionView extends ItemView {
       }
       this.session = session;
       const url = new URL(session.entryUrl);
-      url.hash = context.deck.pages[this.desiredPage - 1]!.hash;
+      // Adapter IDs are private protocol values, not author-controlled anchors.
+      // The bridge navigates those decks through their own API/buttons.
+      if (!context.deck.adapter) url.hash = context.deck.pages[this.desiredPage - 1]!.hash;
       this.ticket = this.presenter.plugin.previewServer.beginSessionDocumentLoad(session.token, url.toString());
       const iframe = this.surface.createEl("iframe", { cls: "html-studio-projection-frame" });
       this.iframe = iframe;
@@ -236,7 +238,13 @@ export class ProjectionView extends ItemView {
       const state = parseDeckState(value.deck);
       if (!state || !this.context || !sameDeckStructure(state, this.context.deck)) return;
       if (value.pathname !== new URL(session.entryUrl).pathname) { this.fail(); return; }
+      const previousPage = this.acknowledgedPage;
       this.acknowledgedPage = state.current;
+      if (previousPage > 0 && Math.abs(state.current - this.desiredPage) < Math.abs(previousPage - this.desiredPage)) {
+        // Native controls may need several animated steps. Progress is healthy;
+        // keep the timeout for a stalled page, not the whole jump.
+        this.timerWindow.clearTimeout(this.syncTimer);this.syncTimer = 0;
+      }
       if (state.current !== this.desiredPage) { this.syncPage(this.desiredPage); return; }
       this.timerWindow.clearTimeout(this.syncTimer);this.syncTimer = 0;
       this.checkReady();

@@ -29,7 +29,7 @@ npm run test:browser
 脚本会建立自己的 47 页合成课件，验证延迟切页、投屏全屏与两端 Esc、内容版本、窗口移出/移回和慢保存时改名，最后删除自己的样本并恢复设置。
 这项检查不包含扩展屏、会议共享或其他平台的真实 Obsidian 验收，不能用 Chromium 检查替代。
 
-讲义编辑改动另运行 `npm run test:obsidian:lecture`，验证真实输入、格式、按页保存、失败恢复与冲突保护。单页讲义和问题面板运行 `npm run test:obsidian:page-info`，包含 5 MiB HTML 首次打开与刷新、侧栏反复展开、主题和缩放。两者沿用上述独立测试库约束；大文件选择当前文件夹安全打开，不授予整个知识库读取范围。
+讲义编辑改动另运行 `npm run test:obsidian:lecture`，验证真实输入、格式、按页保存、失败恢复与冲突保护。单页讲义和问题面板运行 `npm run test:obsidian:page-info`，包含 5 MiB HTML 直接打开与刷新、手动单页讲义、侧栏反复展开、主题和缩放。两者沿用上述独立测试库约束；不再等待已经移除的“先预览”步骤，不授予整个知识库读取范围。
 
 默认打开和文件访问改动运行 `npm run test:obsidian:resource-access`；它检查默认脚本与配套资源、单文件允许、刷新和投屏继承、撤回及重开失效。另运行 `npm run test:obsidian:access-regression`，检查额外图片撤权、范围收窄后的实际刷新、首次扩大路由范围后的页码、讲义和投屏同步。均沿用上述独立测试库约束，只使用合成文件，不连接日常知识库。
 
@@ -52,5 +52,7 @@ npm run test:browser
 其他页数用 `HTML_STUDIO_PROJECTION_PAGES` 指定；需要原样字体、图片和视频时，以 `HTML_STUDIO_PROJECTION_ASSETS` 指定项目内配套文件夹副本，测试将保留该文件夹名称复制到合成课程目录。不得指向日常知识库。
 
 通用课件识别和画面投屏另运行 `node tests/runtime/universal-deck.mjs` 与 `node tests/runtime/picture-projection.mjs`，沿用上述三个 `HTML_STUDIO_TEST_*` 环境变量。覆盖原生按钮/输出键盘/讲义联动、刷新恢复、源窗口迁移、讲义关联、裁切区域、遮挡、切标签、缩放、全屏和结束清理。运行各套验收前关闭专用库遗留的合成课件标签，避免污染活动会话基线。
+
+独立画布投屏运行 `node tests/runtime/independent-projection.mjs`，沿用同一测试库约束，验证任意命名 46 页课件在 Default 与可用的 Primary 主题下，左右栏四种组合不改变输出画布，15 → 16 → 15 同步、讲义隔离及结束保页。
 
 `tests/browser/framework-decks.browser.ts` 可选使用官方框架发布包。将 Reveal 5.2.1 解压为 `<assets>/reveal/`、Swiper 11.2.10 解压为 `<assets>/swiper/` 后，设置 `HTML_STUDIO_FRAMEWORK_ASSETS=<assets>` 再运行浏览器检查。资产只放项目内 `scratch/`，不进入生产依赖或提交；未提供时明确跳过这组框架检查。

@@ -24,15 +24,12 @@ const original = await main.evaluate(() => ({
 const checks = [], errors = [], layouts = [], notes = [];
 main.on("pageerror", error => errors.push(error.stack ?? error.message));
 const sidebar = () => main.locator(".html-studio-lecture:visible");
-const input = () => sidebar().getByRole("textbox", { name: "跳转到课件页码" });
+const input = () => sidebar().getByRole("textbox", { name: /^(跳转到课件页码|选择讲义页码)$/ });
 const editor = () => sidebar().locator(".cm-content");
 const open = async file => {
   const opened = main.evaluate(async file => {
     await app.workspace.getLeaf("tab").openFile(app.vault.getAbstractFileByPath(file));
   }, file);
-  // Large documents exceed dependency analysis's budget. Exercise the existing
-  // folder-only safe fallback instead of granting access to the entire vault.
-  if (file === files[3]) await main.getByRole("button", { name: "先预览", exact: true }).click();
   await opened;
   await main.waitForFunction(file => {
     const p = app.plugins.plugins["zj-html-studio"].presenter;
@@ -61,9 +58,12 @@ try {
   await editor().waitFor();
   assert.equal(await input().inputValue(), "1");
   assert.match(await sidebar().locator(".html-studio-lecture-picker").innerText(), /\/ 1/);
-  for (const name of ["课件上一页", "课件下一页"]) assert.equal(await sidebar().getByRole("button", { name, exact: true }).isDisabled(), true);
+  for (const name of ["上一页讲义", "下一页讲义"]) assert.equal(await sidebar().getByRole("button", { name, exact: true }).isDisabled(), true);
   assert.equal(await main.evaluate(() => app.plugins.plugins["zj-html-studio"].presenter.notePath), null);
-  assert.equal(await main.evaluate(() => app.plugins.plugins["zj-html-studio"].presenter.context), null);
+  assert.deepEqual(await main.evaluate(() => {
+    const p = app.plugins.plugins["zj-html-studio"].presenter;
+    return { picture: p.context.picture, canNavigate: p.context.deck.canNavigate, manual: p.lectureContext.manual };
+  }), { picture: true, canNavigate: false, manual: true });
   await input().fill("2"); await input().press("Enter"); assert.equal(await input().inputValue(), "1");
   await sidebar().getByRole("button", { name: "选择课件页面", exact: true }).click();
   assert.equal(await sidebar().getByRole("option").count(), 1);
@@ -105,10 +105,11 @@ try {
 
   await open(files[3]); await editor().waitFor();
   assert.equal(await input().inputValue(), "1");
-  assert.equal(await main.evaluate(() => app.plugins.plugins["zj-html-studio"].presenter.source.searchBridgeReady), false);
-  assert.equal(await main.evaluate(() => app.plugins.plugins["zj-html-studio"].presenter.context), null);
-  assert.equal(await sidebar().getByRole("button", { name: "课件下一页", exact: true }).isDisabled(), true);
-  checks.push("A 5 MiB HTML without a search bridge still exposes verified single-page notes, without enabling projection");
+  await main.waitForFunction(() => app.plugins.plugins["zj-html-studio"].presenter.source.searchBridgeReady);
+  assert.equal(await main.locator(".html-studio-access-modal:visible,.html-studio-scope-modal:visible").count(), 0);
+  assert.equal(await main.evaluate(() => app.plugins.plugins["zj-html-studio"].presenter.context.picture), true);
+  assert.equal(await sidebar().getByRole("button", { name: "下一页讲义", exact: true }).isDisabled(), true);
+  checks.push("A 5 MiB HTML opens directly with its search bridge, single-page notes and picture projection available");
   await editor().focus(); await main.keyboard.insertText("大文件也能保留讲义"); await saved();
   notes.push(await main.evaluate(() => app.plugins.plugins["zj-html-studio"].presenter.notePath));
   const previousToken = await main.evaluate(() => app.plugins.plugins["zj-html-studio"].presenter.source.session.token);
@@ -118,16 +119,17 @@ try {
     await main.locator(".html-studio-more-button:visible").click();
     await main.getByText("刷新页面", { exact: true }).click();
   }
-  await main.getByRole("button", { name: "先预览", exact: true }).click();
   await main.waitForFunction(previousToken => {
     const source = app.plugins.plugins["zj-html-studio"].presenter.source;
-    return source.session?.token !== previousToken && source.singlePageLectureFile === source.file;
+    return source.session?.token !== previousToken && source.searchBridgeReady
+      && source.lastPageReadingState?.vaultRelativePath === source.file.path;
   }, previousToken);
   await editor().filter({ hasText: "大文件也能保留讲义" }).waitFor();
   assert.equal(await input().inputValue(), "1");
   checks.push("Refreshing a large HTML preserves its one-page lecture and saved content");
 
   await open(files[2]);
+  assert.equal(await input().getAttribute("aria-label"), "跳转到课件页码");
   for (const number of [15, 16, 15]) {
     await input().fill(String(number)); await input().press("Enter");
     await sidebar().locator(`.cm-content[aria-label="第 ${number} 页讲义"]`).waitFor();

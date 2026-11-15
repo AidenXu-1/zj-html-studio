@@ -23,6 +23,22 @@ async function jump(page: Page, n: number): Promise<void> {
   await page.waitForFunction(n=>(window as unknown as Harness).states.at(-1)?.deck?.current===n,n);
 }
 describe("general course recognition",()=>{
+  it("keeps a scaled presentation recognized in tall and wide preview areas",async()=>{
+    const html=generic().replace('body{margin:0}.deck{height:100vh}.screen{display:none;height:90vh}',
+      'html,body{margin:0;width:100%;height:100%;overflow:hidden}.deck{position:absolute;width:1920px;height:1080px;transform-origin:top left}.screen{display:none;height:100%}')
+      .replace('<script>','<script>const fit=()=>document.querySelector(".deck").style.transform=`scale(${Math.min(innerWidth/1920,innerHeight/1080)})`;addEventListener("resize",fit);fit();');
+    const page=await open(html);
+    try {
+      await jump(page,2);
+      for(const [width,height] of [[360,1000],[1400,300],[650,800]]){
+        await page.locator('iframe').evaluate((el,size)=>{el.style.width=`${size[0]}px`;el.style.height=`${size[1]}px`;},[width!,height!]);
+        // Wait beyond the bridge's short animation grace period.
+        await page.waitForTimeout(1700);
+        expect(await page.evaluate(()=>(window as unknown as Harness).states.at(-1)?.deck)).toMatchObject({adapter:'dom',current:2,canNavigate:true});
+        await jump(page,3);await jump(page,2);
+      }
+    }finally{await page.close();}
+  });
   it("recognizes arbitrary names and uses original buttons without changing IDs",async()=>{
     const page=await open(generic());
     try {
