@@ -65,6 +65,7 @@ import {
   type SourceLineIndex
 } from "./text-search";
 import { stepPreviewZoom } from "./zoom";
+import { observePreviewInset } from "./preview-inset";
 import { isDeckPageNumber, parseDeckState, type DeckState } from "../presentation/deck-state";
 import type { LectureContext, PresentationContext } from "../presentation/presenter";
 import {
@@ -156,6 +157,7 @@ export class HtmlPreviewView extends FileView {
   private readingStateRevision = 0;
   private readonly readingStateWaiters = new Set<() => void>();
   private readonly windowEventCleanup = new Map<Window, () => void>();
+  private readonly windowInsetUpdates = new Map<Window, () => void>();
   private readonly candidateWindowListeners = new Set<(event: MessageEvent<unknown>) => void>();
   private mode: PreviewMode = "safe";
   private modeOverride: PreviewMode | null = null;
@@ -230,6 +232,10 @@ export class HtmlPreviewView extends FileView {
     // Do not retain callbacks on unrelated popouts (including projection output).
     this.bindWindowEvents(this.contentEl.win);
     this.register(this.contentEl.onWindowMigrated(win => {
+      // Moving a frame can discard its port before its pagehide message arrives.
+      // End the output here, while the host has confirmed the window change,
+      // rather than relying on an unload message from the outgoing document.
+      this.plugin.presenter.sourceStopped(this);
       this.windowEventCleanup.forEach((cleanup, owner) => { if (owner !== win) cleanup(); });
       this.bindWindowEvents(win);
       // A candidate belongs to the window where it was verified. Do not promote
@@ -245,15 +251,21 @@ export class HtmlPreviewView extends FileView {
       if (this.activeIframe && this.iframeOwnerWindow !== win) this.renderIframe();
       this.scheduleDiagnosticsRender();
     }));
-    this.registerEvent(this.app.workspace.on("layout-change", () => this.updatePresentationControls()));
+    this.registerEvent(this.app.workspace.on("layout-change", () => {
+      this.updatePresentationControls();
+      this.schedulePreviewInset();
+    }));
+    this.registerEvent(this.app.workspace.on("css-change", () => this.schedulePreviewInset()));
     this.registerEvent(this.app.workspace.on("window-close", (_workspaceWindow, win) => {
-      // Its document has already been destroyed; drop references without calling
-      // DOM methods belonging to that closed renderer.
+      // Its renderer is destroyed. Even invoking a closure owned by it can
+      // throw; pagehide handles live cleanup, then drop the closed callbacks.
       this.windowEventCleanup.delete(win);
+      this.windowInsetUpdates.delete(win);
     }));
     this.register(() => {
       this.windowEventCleanup.forEach(cleanup => cleanup());
       this.windowEventCleanup.clear();
+      this.windowInsetUpdates.clear();
     });
     this.registerDomEvent(this.contentEl, "keydown", event => {
       if (isImeComposing(event)) return;
@@ -264,9 +276,16 @@ export class HtmlPreviewView extends FileView {
     });
   }
 
+  private schedulePreviewInset(): void {
+    const win = this.contentEl.win;
+    if (!win.closed) this.windowInsetUpdates.get(win)?.();
+  }
+
   private bindWindowEvents(win: Window): void {
     if (this.windowEventCleanup.has(win)) return;
     const doc = win.document;
+    const inset = observePreviewInset(this.contentEl, win);
+    this.windowInsetUpdates.set(win, inset.update);
     const onMessage = (event: MessageEvent<unknown>): void => {
       this.handleSearchBridgeMessage(event);
       this.candidateWindowListeners.forEach(listener => listener(event));
@@ -286,7 +305,9 @@ export class HtmlPreviewView extends FileView {
     doc.addEventListener("keydown", onKeydown);
     const cleanup = (): void => {
       this.windowEventCleanup.delete(win);
+      this.windowInsetUpdates.delete(win);
       if (win.closed) return;
+      inset.stop();
       win.removeEventListener("message", onMessage);
       doc.removeEventListener("fullscreenchange", onFullscreenChange);
       doc.removeEventListener("keydown", onKeydown);
@@ -468,7 +489,9 @@ export class HtmlPreviewView extends FileView {
   getPresentationContext(): PresentationContext | null {
     const session = this.session, file = this.file;
     if (!file || !session || this.iframeOwnerWindow !== this.contentEl.win || !this.getLectureContext()) return null;
-    const picture = !this.deckState || Boolean(this.deckState.adapter) || this.deckState.canNavigate === false || this.mode === "safe";
+    // A controllable deck renders in the audience's own viewport. Capturing the
+    // presenter's iframe would inherit sidebar geometry, zoom and host overlays.
+    const picture = !this.deckState || this.deckState.canNavigate === false || this.mode === "safe";
     return {
       filePath: file.path, fileName: file.name, sessionId: session.id,
       documentRevision: this.documentRevision ?? "", scopeRelativePath: session.scopeRelativePath,

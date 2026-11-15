@@ -254,6 +254,7 @@ function searchBridgeRuntime(
   };
   type DeckSnapshot = { state: DeckState; elements: Element[]; navigation: "hash" | "keyboard" } | AdapterSnapshot;
   const readAdapters = adapterFactory();
+  const nativeNumberedPages = new WeakSet<Element>();
   // Both adapters are bounded and observe the author's state; they never add IDs
   // or change active classes. Numeric keyboard decks require a matching counter.
   const readLegacyDeckSnapshot = (): DeckSnapshot | null => {
@@ -328,7 +329,22 @@ function searchBridgeRuntime(
   };
   const readDeckSnapshot = (): DeckSnapshot | null => {
     if (!allowDynamicPageScripts) return null;
-    return readLegacyDeckSnapshot() ?? readAdapters();
+    const legacy = readLegacyDeckSnapshot();
+    if (legacy?.navigation === "keyboard") return legacy;
+    const adapter = readAdapters(Boolean(legacy));
+    // A p01/slide-01 name alone cannot prove the author handles hash changes.
+    // Prefer explicit controls for the same validated pages when available.
+    if (legacy && adapter?.navigation === "adapter"
+      && adapter.elements.length === legacy.elements.length
+      && adapter.elements.every((el, index) => el === legacy.elements[index])) {
+      legacy.elements.forEach(element => { if (element) nativeNumberedPages.add(element); });
+      return adapter;
+    }
+    // A cross-fade can temporarily make native page detection ambiguous. Keep
+    // its established controller identity through the existing grace period;
+    // switching to hash navigation would falsely report a different document.
+    if (legacy && legacy.elements.every(element => element !== null && nativeNumberedPages.has(element))) return null;
+    return legacy ?? adapter;
   };
   const readDeckState = (): DeckState | null => readDeckSnapshot()?.state ?? null;
   let deckNavigationRun = 0;
@@ -343,7 +359,9 @@ function searchBridgeRuntime(
       if (location.hash !== hash) location.hash = hash;
       return;
     }
-    const deadline = nativeNow() + 2_400;
+    // Distant jumps may traverse author animations one page at a time. Allow
+    // time for that bounded journey while retaining a short stalled-step limit.
+    const deadline = nativeNow() + Math.min(12_000, Math.max(2_400, Math.abs(target - initial.state.current) * 750 + 1_000));
     let first = true;
     while (run === deckNavigationRun && stillCurrent() && nativeNow() < deadline) {
       const deck = readDeckSnapshot();
@@ -1200,8 +1218,15 @@ function searchBridgeRuntime(
           }
           if (!current() || !deck?.state.adapter || data.page > deck.state.pages.length) return;
         }
-        const page = deck?.state.adapter && Number.isSafeInteger(data.page) && data.page! >= 1 && data.page! <= deck.state.pages.length
+        let page = deck?.state.adapter && Number.isSafeInteger(data.page) && data.page! >= 1 && data.page! <= deck.state.pages.length
           ? data.page! - 1 : deck && deck.navigation !== "hash" ? deck.state.pages.findIndex(page => page.hash === data.hash) : -1;
+        // Saved author hashes still identify real slides after their controls
+        // are recognized. Restore through those controls and confirm the page
+        // instead of acknowledging an asynchronous hashchange too early.
+        if (page < 0 && deck?.navigation === "adapter" && typeof data.hash === "string") {
+          page = deck.elements.findIndex(element => element !== null
+            && `#${nativeApply(nativeGetAttribute, element, ["id"]) as string}` === data.hash);
+        }
         if (page !== undefined && page >= 0) {
           await navigateDeckTo(page + 1, current);
           if (!current()) return;

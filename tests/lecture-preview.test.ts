@@ -3,21 +3,24 @@ import { TFile, type WorkspaceLeaf } from "obsidian";
 import type HtmlStudioPlugin from "../src/main";
 import type { PreviewDocumentLoadTicket, PreviewSessionProbeResult } from "../src/server/preview-server";
 import { HtmlPreviewView } from "../src/view/html-preview-view";
+import { observePreviewInset } from "../src/view/preview-inset";
 
 vi.mock("obsidian", () => ({ TFile: class {}, FileView: class {}, Modal: class {}, Notice: class {} }));
 vi.mock("electron", () => ({ shell: {} }));
+vi.mock("../src/view/preview-inset", () => ({ observePreviewInset: vi.fn(() => ({ update: vi.fn(), stop: vi.fn() })) }));
 
 function fixture() {
   const win = {};
   const file = Object.assign(new TFile(), { path: "large.html", basename: "large" });
+  const workspace = { containerEl: { win: { setTimeout, clearTimeout } }, on: vi.fn(), offref: vi.fn() };
   const view = new HtmlPreviewView({} as WorkspaceLeaf, {
     createReloadRegistrationId: () => "test", presenter: { sourceChanged: vi.fn() },
-    app: { workspace: { containerEl: { win: { setTimeout, clearTimeout } } } }
+    app: { workspace }
   } as unknown as HtmlStudioPlugin);
-  Object.assign(view, { file, contentEl: { win }, iframeOwnerWindow: win,
+  Object.assign(view, { file, app: { workspace }, contentEl: { win }, iframeOwnerWindow: win,
     session: { token: "test", entryUrl: "http://127.0.0.1/large.html" },
     setStatus: vi.fn(), scheduleDiagnosticsRender: vi.fn(), updatePreviewLoadedStatus: vi.fn(), updateSearchState: vi.fn() });
-  return { view, file, win };
+  return { view, file, win, workspace };
 }
 
 describe("single-page lecture availability", () => {
@@ -35,6 +38,8 @@ describe("single-page lecture availability", () => {
     win.dispatchEvent(new MessageEvent("message"));
     expect(receive).toHaveBeenCalledOnce();
     expect(internal.windowEventCleanup.size).toBe(0);
+    const inset = vi.mocked(observePreviewInset).mock.results.at(-1)!.value as ReturnType<typeof observePreviewInset>;
+    expect(inset.stop).toHaveBeenCalledOnce();
   });
 
   it("finishes an in-flight reading-state request after its popout loses all timers", async () => {
@@ -122,6 +127,18 @@ describe("single-page lecture availability", () => {
     Object.assign(view, { searchBridgeReady: true, documentRevision: "a".repeat(64), deckState: deck,
       lastPageReadingState: { vaultRelativePath: file.path } });
     expect(view.getLectureContext()?.deck.current).toBe(15);
+  });
+
+  it.each(["dom", "reveal", "swiper"])("renders a controllable %s course in an independent audience viewport", adapter => {
+    const { view, file } = fixture();
+    const deck = { adapter, canNavigate: true, current: 2, pages: [1, 2].map(n => ({ title: `Page ${n}`, hash: `#@zj/${adapter}/${n}` })) };
+    Object.assign(view, { mode: "standard", searchBridgeReady: true, documentRevision: "a".repeat(64), deckState: deck,
+      lastPageReadingState: { vaultRelativePath: file.path } });
+    expect(view.getPresentationContext()).toMatchObject({ picture: false, deck: { current: 2 } });
+    Object.assign(view, { deckState: { ...deck, canNavigate: false } });
+    expect(view.getPresentationContext()?.picture).toBe(true);
+    Object.assign(view, { deckState: deck, mode: "safe" });
+    expect(view.getPresentationContext()?.picture).toBe(true);
   });
 
   it.each(["success", "failed GET", "another file", "another window", "another load", "child page"])(

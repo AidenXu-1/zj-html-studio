@@ -30,6 +30,13 @@ const open = async () => {
     const leaf = app.workspace.getLeaf("tab"); await leaf.openFile(app.vault.getAbstractFileByPath(file), { active: true }); return leaf.id;
   }, file));
   await source().contentFrame().locator("body[data-private-status='403']").waitFor();
+  // The page can finish its own fetch before the host attaches the new iframe.
+  // Exercise interaction after this document's preview bridge is ready.
+  await main.waitForFunction(file => {
+    const s = app.plugins.plugins["zj-html-studio"].presenter.source;
+    return s?.file?.path === file && s.searchBridgeReady
+      && s.lastPageReadingState?.vaultRelativePath === file;
+  }, file);
   assert.equal(await modal().count(), 0);
 };
 const grant = async () => {
@@ -60,6 +67,8 @@ try {
   assert.equal((await state()).mode, "standard");
   assert.equal(await main.locator(".html-studio-script-notice:visible").count(), 0);
   await source().contentFrame().getByRole("button", { name: "测试交互" }).click();
+  // Require the result of this single click, without retrying the action.
+  await source().contentFrame().getByRole("button", { name: "交互正常" }).waitFor();
   assert.equal(await source().contentFrame().getByRole("button", { name: "交互正常" }).count(), 1);
   assert.equal(await source().contentFrame().locator("body").getAttribute("data-node"), "undefined");
   checks.push("Large HTML opens without a dialog or script warning; interaction works and Node is unavailable");

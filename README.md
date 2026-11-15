@@ -12,6 +12,8 @@ English · [简体中文](README.zh-CN.md)
 
 Requires **Obsidian 1.12.7 or later on desktop**. No account or payment is required. For manual installation, download `main.js`, `manifest.json`, and `styles.css` from the same [GitHub Release](https://github.com/AidenXu-1/zj-html-studio/releases), place them in `<vault>/.obsidian/plugins/zj-html-studio/`, and enable the plugin.
 
+For reliable cross-window tab moves, use the current full Obsidian installer. The 0.4.24 migration checks passed with installer **1.15.1 / Electron 43.8.9**. Updating only the app code can leave an older Electron runtime in place; check both application and installer versions in **Settings → About**.
+
 ## Preview and search
 
 - Open HTML in native tabs, with local images, styles, scripts, fonts, audio, and video.
@@ -54,7 +56,11 @@ Notes follow recognized slides. The bottom field accepts a page number; its menu
 
 Without an independent display, the presentation window stays available to move manually. Double-click its course area or use its fullscreen action. Meeting software can share this window separately. Esc in the output exits that window's fullscreen. On macOS, presentation uses fullscreen on the selected display without moving the main workspace into another fullscreen Space.
 
-Numbered decks with reliable controls use a separate page-synchronized course session. Other supported frameworks and HTML use a live picture of the visible course region. The picture pauses when the source is hidden or covered, and resumes when visible. Moving the source to another window ends picture presentation; start it again from the new window. The output preserves aspect ratio and excludes notes and the desktop. Audio continues on the computer. This mode is for teaching, not high-frame-rate video sharing. Page-synchronized output does not synchronize video position or form state.
+Decks with reliable controls, including supported Reveal, Swiper, and generic slide structures, use a separate page-synchronized course session. That session lays out the original HTML for the audience window, independently of Obsidian's sidebars and local preview zoom. Page-synchronized output does not synchronize video position or form state.
+
+HTML without reliable navigation uses a live picture of the visible course region. The picture pauses when the source is hidden or covered, and resumes when visible. Picture output preserves the source region's aspect ratio and excludes notes and the desktop. Audio continues on the computer. This mode is for teaching, not high-frame-rate video sharing.
+
+Moving the source tab to another window ends the current presentation and preserves the course page. Start presentation again from the new window.
 
 ## Embed in Markdown
 
